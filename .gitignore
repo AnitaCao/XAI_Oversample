@@ -6,6 +6,8 @@ data/
 datasets_files/
 checkpoint/
 logs/
+__pycache__/
+*.pyc
 ImageNet_LT/
 */__pycache__
 *.h5
