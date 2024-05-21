@@ -1,0 +1,15 @@
+*.com
+*.zip
+*.tar
+.DS_Store
+data/
+datasets_files/
+checkpoint/
+logs/
+ImageNet_LT/
+*/__pycache__
+*.h5
+*.csv
+*.npz
+*.pkl
+CMO/logs/
