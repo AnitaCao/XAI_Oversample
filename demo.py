@@ -1,6 +1,5 @@
 from torchvision import models, transforms
-import gradcam as gradcam
-#from gradcam import GradCAM
+from gradcam import GradCAM
 import utils as util
 #from utils import load_image, save_img_with_heatmap, check_path_exist, apply_transforms, save_heatmap
 import time
@@ -9,14 +8,42 @@ import json
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
+import os
+from PIL import Image
+import torch
+import torchvision.transforms as transforms
 
 
 # Load target iamge
-image_file = 'data_examples/dog-park.jpg' # More examples exist in the examples folder
-img = util.load_image(image_file)
-plt.imshow(img)
-plt.axis('off')
-plt.show()
+script_dir = os.path.dirname(os.path.abspath(__file__))
+#image_path = os.path.join(script_dir, 'data_examples/dog-park.jpg')
+
+image_dir = 'D:/anita/Research/competitions/imagenet-object-localization-challenge/ILSVRC/ILSVRC/Data/CLS-LOC/'
+image1_path = os.path.join(image_dir, 'val/ILSVRC2012_val_00049991.JPEG')
+image2_path = os.path.join(image_dir, 'train/n01484850/n01484850_375.JPEG')
+image3_path = os.path.join(image_dir, 'val/ILSVRC2012_val_00049991.JPEG')
+
+
+
+# Define a transform to convert PIL images to tensors
+transform = transforms.Compose([
+    transforms.Resize((224, 224)),  # Resize image to 224x224
+    transforms.ToTensor()           # Convert image to tensor
+])
+
+# Load images
+image_paths = [image1_path, image2_path, image3_path]
+images = [transform(Image.open(path)) for path in image_paths]
+
+# Stack images into a single tensor
+batch_tensor = torch.stack(images, dim=0)
+
+
+#image_file = 'data_examples/dog-park.jpg' # More examples exist in the examples folder
+#img = util.load_image(image_path)
+#plt.imshow(img)
+#plt.axis('off')
+#plt.show()
 
 
 def saliency_visualisation(img, saliency):
@@ -34,7 +61,7 @@ target_layer = 'layer4'
 model = models.__dict__[model](pretrained=True).eval()
 model = model.cuda()
 
-gc = gradcam.GradCAM(model, target_layer)
+gc = GradCAM(model, target_layer)
 transform = util.get_transform(resize_size=224, center_crop_size=None)
 x = transform(img).unsqueeze(0)
 start = time.time()

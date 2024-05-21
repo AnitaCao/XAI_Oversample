@@ -433,15 +433,15 @@ def save_img_with_heatmap(img, mask, title=None, style=None, normalise=True):
         mask = mask - np.min(mask)
         mask = mask / np.max(mask)
     heatmap = cv2.applyColorMap(np.uint8(255 * mask.squeeze()), cv2.COLORMAP_JET)  # [H, W, 3]
+    print(heatmap.shape)
 
     heatmap = heatmap[:, :, ::-1]
+    print(heatmap.shape)
+    print(img.size)
+    print(np.array(img).shape)    
     if style == 'zhou':
         img_with_heatmap = heatmap * 0.3 + np.array(img) * 0.5
     else:
-        # if normalise:
-        #     heatmap = heatmap - np.min(heatmap)
-        #     heatmap = heatmap/np.max(heatmap)
-        # heatmap = np.uint8(255 * heatmap)
         mask = np.expand_dims(mask, axis=2)
         img_with_heatmap = 1 * (1 - mask ** 0.8) * img + (mask ** 0.8) * heatmap
         # img_with_heatmap = 1 * (1 - mask) * img + (mask) * heatmap

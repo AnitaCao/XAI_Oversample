@@ -38,11 +38,15 @@ class GradCAM(BaseCAM):
         b, c, h, w = x.size()
 
         # predication on raw x
-        logit = self.model(x)
+        #print("checking input x values to see if there is any non or inf values:")
+        #print(torch.isnan(x).any(), torch.isinf(x).any())
+
+        logit = self.model(x) #logit has shape [b, num_classes]
         softmax = F.softmax(logit, dim=1)
 
         if class_idx is None:
-            score = logit[:, logit.max(1)[-1]]#.squeeze()
+            indices = logit.max(1)[-1]
+            score = logit[torch.arange(logit.shape[0]), indices]#.squeeze()    
         else:
             score = logit[:, class_idx]#.squeeze()
             # score = logit[:, class_idx]
@@ -52,10 +56,16 @@ class GradCAM(BaseCAM):
 
         self.model.zero_grad()
         gradients_list = []
-        for i, item in enumerate(score):
-            item.backward(retain_graph=retain_graph)
-            gradients = self.gradients['value'].data[i]
-            gradients_list.append(gradients)
+
+        
+        for i, item in enumerate(score):  
+            #print(item)
+            if item.numel() == 1:  # Check if item is a scalar
+                item.backward(retain_graph=retain_graph)  
+                gradients = self.gradients['value'].data[i]
+                gradients_list.append(gradients)
+            else:
+                print(f"Element {i} of 'score' is not a scalar, it has {item.numel()} elements")
 
         gradients = torch.stack(gradients_list, dim=0)
         activations = self.activations['value'].data
