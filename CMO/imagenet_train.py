@@ -14,7 +14,7 @@ import torch.optim
 import torch.utils.data
 import torchvision.transforms as transforms
 import torchvision.models as models
-from imbalance_data.lt_data import LT_Dataset
+from imbalance_data.lt_data import LT_Dataset, Imb_Dataset
 from losses import LDAMLoss, BalancedSoftmaxLoss
 import warnings
 from torch.nn import Parameter
@@ -41,7 +41,7 @@ args['loss_type'] = 'BS'
 args['train_rule'] = 'DRW'
 args['imb_factor'] = 0.01 #this is not used in the LT_Dataset class. TODO: Implement a new dataset based on imb_factor
 args['rand_number'] = 0
-args['mixup_prob'] = 0.6
+args['mixup_prob'] = 0.5
 args['exp_str'] = 'exp'
 args['seed'] = None
 args['gpu'] = 0
@@ -54,13 +54,13 @@ args['lr'] = 0.1
 args['momentum'] = 0.9
 args['weight_decay'] = 5e-4
 args['epochs'] = 100
-args['start_data_aug'] = -1
-args['end_data_aug'] = 0
+args['start_data_aug'] = 25 # start data augmentation after this epoch
+args['end_data_aug'] = 25 # do not use data augmentation for the last 25 epoches
 args['use_randaug'] = False
 args['beta'] = 1
 args['data_aug'] = 'CMO_XAI' # 'CMO' or 'CMO_XAI'
 args['weighted_alpha'] = 0.5
-args['num_classes'] = 1000
+args['num_classes'] = 10 #1000
 args['root_log'] = './logs'
 args['root_model'] = './checkpoint'
 args['store_name'] = '_'.join([args['dataset'], args['arch'], args['loss_type'], args['train_rule'], args['data_aug'], str(args['imb_factor']), str(args['rand_number']), str(args['mixup_prob']), args['exp_str']])
@@ -122,6 +122,16 @@ def main_worker(gpu, ngpus_per_node, args):
     print("=> creating model '{}'".format(args["arch"]))
     num_classes = args['num_classes']
     model = getattr(models, args["arch"])(pretrained=False)
+    if args['num_classes'] == 10:
+        num_ftrs = model.fc.in_features
+        model.fc = nn.Linear(num_ftrs, num_classes)
+
+    XAI_model = models.resnet50(pretrained=True) # load a pretrained model for XAI heatmap generation
+    XAI_model = XAI_model.eval()
+    XAI_model = XAI_model.cuda()
+    target_layer = 'layer4'
+    gc = gradcam.GradCAM(XAI_model, target_layer)
+
 
     if args['loss_type'] == 'LDAM':
         num_ftrs = model.fc.in_features
@@ -208,25 +218,37 @@ def main_worker(gpu, ngpus_per_node, args):
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
 
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    train_path = os.path.join(script_dir, 'ImageNet_LT', 'ImageNet_LT_train.txt')
-    val_path = os.path.join(script_dir, 'ImageNet_LT', 'ImageNet_LT_val.txt')
+  
 
     '''
     Current dataset is a long tailed dataset with 1000 classes (from CMO paper).
     TODO: Create different Datases with different imbalance ratio. 
     '''
-    train_dataset = LT_Dataset(args['root'], train_path, transform_train,
-                               use_randaug=args['use_randaug'])
-    val_dataset = LT_Dataset(args['root'], val_path, transform_val)
-    num_classes = len(np.unique(train_dataset.targets))
-    assert num_classes == 1000
 
+    if args['num_classes'] == 1000:
+        print("Using ImageNet_LT dataset")
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        train_path = os.path.join(script_dir, 'ImageNet_LT', 'ImageNet_LT_train.txt')
+        val_path = os.path.join(script_dir, 'ImageNet_LT', 'ImageNet_LT_val.txt')
+        train_dataset = LT_Dataset(args['root'], train_path, transform_train,
+                               use_randaug=args['use_randaug'])
+        val_dataset = LT_Dataset(args['root'], val_path, transform_val)
+        num_classes = len(np.unique(train_dataset.targets))
+        assert num_classes == 1000
+    else:
+        data_path = os.path.join(args['root'], 'train')
+        train_dataset = Imb_Dataset(data_path, transform_train, use_randaug=args['use_randaug'], datatype='train')
+        val_dataset = Imb_Dataset(data_path, transform_val, use_randaug=args['use_randaug'], datatype='val')
+        num_classes = len(np.unique(train_dataset.targets))
+
+    print("Number of classes: ", num_classes)
+    print("Number of training samples: ", len(np.unique(val_dataset.targets)))
     cls_num_list = [0] * num_classes
     for label in train_dataset.targets:
         cls_num_list[label] += 1
     print('cls num list:')
     print(cls_num_list)
+
     args['cls_num_list'] = cls_num_list
     train_cls_num_list = np.array(cls_num_list)
 
@@ -298,7 +320,7 @@ def main_worker(gpu, ngpus_per_node, args):
             return
 
         # train for one epoch
-        train(train_loader, model, criterion, optimizer, epoch, args, weighted_train_loader=weighted_train_loader)
+        train(train_loader, model, gc, criterion, optimizer, epoch, args, weighted_train_loader=weighted_train_loader)
 
         # evaluate on validation set
         acc1 = validate(val_loader, model, criterion, args)
@@ -332,7 +354,7 @@ def hms_string(sec_elapsed):
     return "{}:{:>02}:{:>05.2f}".format(h, m, s)
 
 
-def train(train_loader, model, criterion, optimizer, epoch, args, log=None,
+def train(train_loader, model, gc, criterion, optimizer, epoch, args, log=None,
               tf_writer=None, weighted_train_loader=None):
     batch_time = AverageMeter('Time', ':6.3f')
     data_time = AverageMeter('Data', ':6.3f')
@@ -342,12 +364,6 @@ def train(train_loader, model, criterion, optimizer, epoch, args, log=None,
 
     # switch to train mode
     model.train()
-    
-    XAI_model = models.resnet50(pretrained=True) # load a pretrained model for XAI heatmap generation
-    XAI_model = XAI_model.eval()
-    XAI_model = XAI_model.cuda()
-    target_layer = 'layer4'
-    gc = gradcam.GradCAM(XAI_model, target_layer)
 
     end = time.time()
     if args['data_aug'].startswith('CMO'):
@@ -409,7 +425,7 @@ def train(train_loader, model, criterion, optimizer, epoch, args, log=None,
             #input_ori = input.clone() # save the original input for display purposes
             masks = torch.zeros_like(input)  # Create a zero mask for all images
             lam_list = []
-            for j in range(args['batch_size']):
+            for j in range(len(bounding_list)):
                 bbx1, bby1, bbx2, bby2 = bounding_list[j]
                 masks[j, :, bby1:bby2, bbx1:bbx2] = 1  # Set mask to 1 within the bounding box
                 lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (input.size()[-1] * input.size()[-2]))
