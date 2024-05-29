@@ -35,7 +35,7 @@ import gradcam
 
 args = {}
 args['root'] = 'D:/anita/Research/competitions/imagenet-object-localization-challenge/ILSVRC/ILSVRC/Data/CLS-LOC/'
-args['dataset'] = 'ImageNet_LT'
+args['dataset'] = 'ImageNet_Imb'
 args['arch'] = 'resnet50'
 args['loss_type'] = 'BS'
 args['train_rule'] = 'DRW'
@@ -54,7 +54,7 @@ args['lr'] = 0.1
 args['momentum'] = 0.9
 args['weight_decay'] = 5e-4
 args['epochs'] = 100
-args['start_data_aug'] = 25 # start data augmentation after this epoch
+args['start_data_aug'] = 25 # start data augmentation after 25th epoch
 args['end_data_aug'] = 25 # do not use data augmentation for the last 25 epoches
 args['use_randaug'] = False
 args['beta'] = 1
@@ -415,14 +415,14 @@ def train(train_loader, model, gc, criterion, optimizer, epoch, args, log=None,
             start = time.time()
             saliencys, _ = gc(input2, None) 
             time1 = time.time()
-            print('Total time to generate saliencys is: {:.2f} second'.format((time1-start)))    
-            bounding_list = XAI_box(saliencys, lam) # lam is used as the threshold for the ROI
-            print('Total time to get the bouding boxes is: {:.2f} second'.format((time.time()-time1)))
+            print('Total time to generate saliencys is: {:.2f} second'.format((time1-start))) 
+
+            bounding_list = XAI_box(saliencys, lam) # TODO: lam should be used as the threshold for the ROI, current threshold is 0.5
             #print("Bounding box list: ", bounding_list)
             
 
             #repace input's area with input2's area based on bounding box
-            #input_ori = input.clone() # save the original input for display purposes
+            input_ori = input.clone() # save the original input for display purposes
             masks = torch.zeros_like(input)  # Create a zero mask for all images
             lam_list = []
             for j in range(len(bounding_list)):
@@ -436,8 +436,8 @@ def train(train_loader, model, gc, criterion, optimizer, epoch, args, log=None,
             output = model(input)
             loss = criterion(output, target) * torch.tensor(lam_list).cuda(args['gpu']) + criterion(output, target2) * (1. - torch.tensor(lam_list).cuda(args['gpu']))
             loss = loss.mean()
-           # print("just for testing purposes: CMO+XAI mixup images: ")
-           # testing_plot(input_ori, input2, input)
+            print("Just for testing purposes: CMO+XAI mixup images: ")
+            testing_plot(input_ori, input2, input)
         else:
             output = model(input)
             loss = criterion(output, target).mean()
@@ -507,7 +507,7 @@ def getCountour(threshold, saliency):
     contours, _ = cv2.findContours(binary_saliency, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     if len(contours) == 0:
-        print("!No contour found!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+        print("!!!No contour found!!!")
         print(saliency)
         print(binary_saliency)
         return 0, 0, 0, 0

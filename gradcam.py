@@ -80,7 +80,7 @@ class GradCAM(BaseCAM):
         # saliency_map_min, saliency_map_max = saliency_map.min(), saliency_map.max()
         # saliency_map = (saliency_map - saliency_map_min) / (saliency_map_max - saliency_map_min)
 
-        saliency_map_shape = saliency_map.shape
+        saliency_map_shape = saliency_map.shape # [b, 1, h, w] in the case of cifar10, it is 128, 1, 32, 32
         saliency_map = saliency_map.view(saliency_map.shape[0], -1)
         saliency_map_min, saliency_map_max = saliency_map.min(1, keepdim=True)[0], saliency_map.max(1, keepdim=True)[0]
         saliency_map = (saliency_map - saliency_map_min) / (saliency_map_max - saliency_map_min)
