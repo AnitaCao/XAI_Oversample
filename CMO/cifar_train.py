@@ -10,6 +10,7 @@ import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 from imbalance_data.imbalance_cifar import IMBALANCECIFAR10, IMBALANCECIFAR100
 import models
+import torchvision.models as torch_models
 from tensorboardX import SummaryWriter
 
 #from losses import LDAMLoss, BalancedSoftmaxLoss
@@ -35,26 +36,26 @@ args['loss_type'] = 'CE'
 args['train_rule'] = 'DRW'
 args['imb_factor'] = 0.01
 args['rand_number'] = 0
-args['mixup_prob'] = 0.8 #TODO: Q:mixup_prob should be related to the ratio of imbalance?
+args['mixup_prob'] = 0.6 #TODO: Q:mixup_prob should be related to the ratio of imbalance?
 args['exp_str'] = 'exp'
 args['seed'] = None
 args['gpu'] = 0
 args['resume'] = False
 args['start_epoch'] = 0
-args['batch_size'] = 128
+args['batch_size'] = 32
 args['workers'] = 4
 args['print_freq'] = 50
 args['lr'] = 0.1
 args['momentum'] = 0.9
 args['weight_decay'] = 5e-4
 args['epochs'] = 100
-args['start_data_aug'] = 0
-args['end_data_aug'] = 0
+args['start_data_aug'] = -1
+args['end_data_aug'] = 25
 args['use_randaug'] = False
 args['beta'] = 1
 args['data_aug'] = 'CMO_XAI'
 args['weighted_alpha'] = 0.5
-args['num_classes'] = 100
+args['num_classes'] = 10
 args['root_log'] = './logs'
 args['root_model'] = './checkpoint'
 args['store_name'] = '_'.join([args['dataset'], args['arch'], args['loss_type'], args['train_rule'], args['data_aug'], str(args['imb_factor']), str(args['rand_number']), str(args['mixup_prob']), args['exp_str']])
@@ -105,6 +106,18 @@ def main_worker(gpu, ngpus_per_node, args):
     use_norm = True if args["loss_type"] == 'LDAM' else False
     model = models.__dict__[args["arch"]](num_classes=num_classes, use_norm=use_norm)
     print(model)
+
+
+    XAI_model = torch_models.resnet50(pretrained=True) # load a pretrained model for XAI heatmap generation
+    XAI_model.conv1 = torch.nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
+    num_ftrs = XAI_model.fc.in_features
+    XAI_model.fc = nn.Linear(num_ftrs, num_classes) 
+    print("XAI model: ", XAI_model) 
+
+    XAI_model = XAI_model.cuda()
+    XAI_model.eval()
+    gc = gradcam.GradCAM(XAI_model, target_layer='layer4')
+
 
     if args['gpu'] is not None:
         torch.cuda.set_device(args['gpu'])
@@ -177,7 +190,8 @@ def main_worker(gpu, ngpus_per_node, args):
 
     else:
         transform_train = transforms.Compose([
-            transforms.RandomCrop(32, padding=4),
+            transforms.Resize((224, 224)),
+            #transforms.RandomCrop(32, padding=4),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             transforms.Normalize(mean=mean, std=std),
@@ -204,6 +218,7 @@ def main_worker(gpu, ngpus_per_node, args):
     cls_num_list = train_dataset.get_cls_num_list()
     print('cls num list:') 
     print(cls_num_list) #[5000, 2997, 1796, 1077, 645, 387, 232, 139, 83, 50]
+    print("total number of samples: ", sum(cls_num_list)) #total number of samples:  12006
     args["cls_num_list"] = cls_num_list
     train_cls_num_list = np.array(cls_num_list)
 
@@ -277,7 +292,7 @@ def main_worker(gpu, ngpus_per_node, args):
             return
 
         # train for one epoch
-        train(train_loader, model, criterion, optimizer, epoch, args, log_training,
+        train(train_loader, model, gc, criterion, optimizer, epoch, args, log_training,
               tf_writer, weighted_train_loader)
 
         # evaluate on validation set
@@ -313,7 +328,7 @@ def hms_string(sec_elapsed):
     return "{}:{:>02}:{:>05.2f}".format(h, m, s)
 
 
-def train(train_loader, model, criterion, optimizer, epoch, args, log,
+def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log,
               tf_writer, weighted_train_loader=None):
     batch_time = AverageMeter('Time', ':6.3f')
     data_time = AverageMeter('Data', ':6.3f')
@@ -369,16 +384,28 @@ def train(train_loader, model, criterion, optimizer, epoch, args, log,
                 args['epochs'] - args['end_data_aug']) and r < args["mixup_prob"]:
             # generate mixed sample
             lam = np.random.beta(args["beta"], args["beta"])
-            print("------Calling XAI_Box--------")      
-            bounding_list = XAI_box(model, input2, lam) # lam is used as the threshold for the ROI
-            print("Bounding box list: ", bounding_list)
+
+
+            print("---Calling XAI_Box. Batch number: ", i)
+            start = time.time()
+            saliencys, _ = gradcam(input2, None) 
+
+            time1 = time.time()
+            print('Total time to generate saliencys is: {:.2f} second'.format((time1-start)))  
+            bounding_list = XAI_box(saliencys, lam) # lam is used as the threshold for the ROI
+           
+            #print("Bounding box list: ", bounding_list)
             #repace input's area with input2's area based on bounding box
+
+            #For testing purposes, visualise the saliency map
+            #saliency_visualisation(input2, saliencys)
+
             input_ori = input.clone() # save the original input for display purposes
             masks = torch.zeros_like(input)  # Create a zero mask for all images
             lam_list = []
-            for i in range(args['batch_size']):
-                bbx1, bby1, bbx2, bby2 = bounding_list[i]
-                masks[i, :, bby1:bby2, bbx1:bbx2] = 1  # Set mask to 1 within the bounding box
+            for j in range(args['batch_size']):
+                bbx1, bby1, bbx2, bby2 = bounding_list[j]
+                masks[j, :, bby1:bby2, bbx1:bbx2] = 1  # Set mask to 1 within the bounding box
                 lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (input.size()[-1] * input.size()[-2]))
                 lam_list.append(lam)
 
@@ -387,8 +414,8 @@ def train(train_loader, model, criterion, optimizer, epoch, args, log,
             output = model(input)
             loss = criterion(output, target) * torch.tensor(lam_list).cuda(args['gpu']) + criterion(output, target2) * (1. - torch.tensor(lam_list).cuda(args['gpu']))
             loss = loss.mean()
-            print("just for testing purposes: CMO+XAI mixup images: ")
-            testing_plot(input_ori, input2, input)
+            #print("just for testing purposes: CMO+XAI mixup images: ")
+            #testing_plot(input_ori, input2, input)
         else:
             output = model(input) #output.size() = [128, 10], 128 is batch size, 10 is number of classes
             loss = criterion(output, target)
@@ -426,12 +453,10 @@ def train(train_loader, model, criterion, optimizer, epoch, args, log,
     tf_writer.add_scalar('acc/train_top5', top5.avg, epoch)
     tf_writer.add_scalar('lr', optimizer.param_groups[-1]['lr'], epoch)
 
-def XAI_box(model, batch, lam):
-    target_layer = 'layer4'
-    
-    gc = gradcam.GradCAM(model, target_layer)
 
-    saliency, _ = gc(batch, None) # saliency is a batch of saliency maps. For example: 32 by 1 by 224 by 224
+def XAI_box(saliencys, lam):
+
+    # saliency is a batch of saliency maps. For example: 32 by 1 by 224 by 224
 
     #print('Saliency generated by Grad-CAM')
     #saliency_visualisation(batch, saliency) #visualise the saliency map
@@ -439,7 +464,13 @@ def XAI_box(model, batch, lam):
     #TODO: threshold should be related to lam.
     threshold = 0.5 
 
-    bboxes = getCountourList(threshold, saliency)
+    '''
+    #for each saliency map in the batch, print out the min and max values
+    for k in range(len(saliencys)):
+        saliency = saliencys[k].squeeze(0)
+        print("for image ", k, "min: ", np.min(saliency), "max: ", np.max(saliency))
+    '''
+    bboxes = getCountourList(threshold, saliencys)
     return bboxes
 
 def rand_bbox(size, lam):
@@ -648,19 +679,25 @@ def saliency_visualisation(batch, saliencys):
     imgs = denormalize(batch.cpu())
     img = imgs[15].numpy()
     img = np.transpose(img, (1, 2, 0)) # move color channel to last dimension
+
     saliency = saliencys[15].squeeze(0)
+
+    saliency = cv2.resize(saliency, (32,32))
+    img = cv2.resize(img, (32,32))
     #saliency = cv2.resize(saliency, (224, 224))
+
     print(np.min(saliency))
     print(np.max(saliency))
 
     fig, ax = plt.subplots(1,3)
     
     img = img * 255
+
     img_heatmap = utils.save_img_with_heatmap(img, saliency, None, style='zhou', normalise=True)
     heatmap = utils.save_heatmap(saliency, None, normalise=True)
 
     #add bouding box around ROI 
-    threshold = 0.6  
+    threshold = 0.5  
     _, binary_saliency = cv2.threshold(saliency, threshold, 255, cv2.THRESH_BINARY) # Convert the saliency map to binary
 
     # Convert binary_saliency to 8-bit image
