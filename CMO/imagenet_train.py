@@ -14,7 +14,8 @@ import torch.optim
 import torch.utils.data
 import torchvision.transforms as transforms
 import torchvision.models as models
-from imbalance_data.lt_data import LT_Dataset, Imb_Dataset
+from tensorboardX import SummaryWriter
+from imbalance_data.lt_data import LT_Dataset, Imb_Dataset, load_imb_imagenet
 from losses import LDAMLoss, BalancedSoftmaxLoss
 import warnings
 from torch.nn import Parameter
@@ -58,7 +59,7 @@ args['start_data_aug'] = 25 # start data augmentation after 25th epoch
 args['end_data_aug'] = 25 # do not use data augmentation for the last 25 epoches
 args['use_randaug'] = False
 args['beta'] = 1
-args['data_aug'] = 'CMO_XAI' # 'CMO' or 'CMO_XAI'
+args['data_aug'] = 'CMO' # 'CMO' or 'CMO_XAI'
 args['weighted_alpha'] = 0.5
 args['num_classes'] = 10 #1000
 args['root_log'] = './logs'
@@ -81,11 +82,6 @@ class NormedLinear(nn.Module):
 
 
 def main():
-    #args = parser.parse_args()
-    #args.store_name = '_'.join(
-       # [args.dataset, args.arch, args.loss_type, args.train_rule, args.data_aug, str(args.imb_factor),
-       #  str(args.rand_number),
-        # str(args.mixup_prob), args.exp_str])
     prepare_folders(args)
     #if args['cos']:
     #    print("use cosine LR")
@@ -237,8 +233,9 @@ def main_worker(gpu, ngpus_per_node, args):
         assert num_classes == 1000
     else:
         data_path = os.path.join(args['root'], 'train')
-        train_dataset = Imb_Dataset(data_path, transform_train, use_randaug=args['use_randaug'], datatype='train')
-        val_dataset = Imb_Dataset(data_path, transform_val, use_randaug=args['use_randaug'], datatype='val')
+        #train_dataset = Imb_Dataset(data_path, transform_train, use_randaug=args['use_randaug'], datatype='train')
+        #val_dataset = Imb_Dataset(data_path, transform_val, use_randaug=args['use_randaug'], datatype='val')
+        train_dataset, val_dataset = load_imb_imagenet(data_path, transform_train, transform_val)
         num_classes = len(np.unique(train_dataset.targets))
 
     print("Number of classes: ", num_classes)
@@ -279,6 +276,14 @@ def main_worker(gpu, ngpus_per_node, args):
                                                             sampler=weighted_sampler)
 
     cls_num_list_cuda = torch.from_numpy(np.array(cls_num_list)).float().cuda()
+
+    # init log for training
+    log_training = open(os.path.join(args["root_log"], args["store_name"], 'log_train.csv'), 'w')
+    log_testing = open(os.path.join(args["root_log"], args["store_name"], 'log_test.csv'), 'w')
+    with open(os.path.join(args["root_log"], args["store_name"], 'args.txt'), 'w') as f:
+        f.write(str(args))
+    tf_writer = SummaryWriter(log_dir=os.path.join(args["root_log"], args["store_name"]))
+    
     start_time = time.time()
     print("Training started!")
 
@@ -320,20 +325,20 @@ def main_worker(gpu, ngpus_per_node, args):
             return
 
         # train for one epoch
-        train(train_loader, model, gc, criterion, optimizer, epoch, args, weighted_train_loader=weighted_train_loader)
+        train(train_loader, model, gc, criterion, optimizer, epoch, args, log_training, tf_writer,weighted_train_loader=weighted_train_loader)
 
         # evaluate on validation set
-        acc1 = validate(val_loader, model, criterion, args)
+        acc1 = validate(val_loader, model, criterion, epoch, args, log_testing, tf_writer)
 
         # remember best acc@1 and save checkpoint
         is_best = acc1 > best_acc1
         best_acc1 = max(acc1, best_acc1)
 
-        # tf_writer.add_scalar('acc/test_top1_best', best_acc1, epoch)
+        #tf_writer.add_scalar('acc/test_top1_best', best_acc1, epoch)
         output_best = 'Best Prec@1: %.3f\n' % (best_acc1)
         print(output_best)
-        # log_testing.write(output_best + '\n')
-        # log_testing.flush()
+        log_testing.write(output_best + '\n')
+        log_testing.flush()
 
         save_checkpoint(args, {
             'epoch': epoch + 1,
@@ -354,8 +359,8 @@ def hms_string(sec_elapsed):
     return "{}:{:>02}:{:>05.2f}".format(h, m, s)
 
 
-def train(train_loader, model, gc, criterion, optimizer, epoch, args, log=None,
-              tf_writer=None, weighted_train_loader=None):
+def train(train_loader, model, gc, criterion, optimizer, epoch, args, log,
+              tf_writer, weighted_train_loader=None):
     batch_time = AverageMeter('Time', ':6.3f')
     data_time = AverageMeter('Data', ':6.3f')
     losses = AverageMeter('Loss', ':.4e')
@@ -467,13 +472,13 @@ def train(train_loader, model, gc, criterion, optimizer, epoch, args, log=None,
                 epoch, i, len(train_loader), batch_time=batch_time,
                 data_time=data_time, loss=losses, top1=top1, top5=top5, lr=optimizer.param_groups[-1]['lr']))  # TODO
             print(output)
-            # log.write(output + '\n')
-            # log.flush()
+            log.write(output + '\n')
+            log.flush()
 
-    # tf_writer.add_scalar('loss/train', losses.avg, epoch)
-    # tf_writer.add_scalar('acc/train_top1', top1.avg, epoch)
-    # tf_writer.add_scalar('acc/train_top5', top5.avg, epoch)
-    # tf_writer.add_scalar('lr', optimizer.param_groups[-1]['lr'], epoch)
+    tf_writer.add_scalar('loss/train', losses.avg, epoch)
+    tf_writer.add_scalar('acc/train_top1', top1.avg, epoch)
+    tf_writer.add_scalar('acc/train_top5', top5.avg, epoch)
+    tf_writer.add_scalar('lr', optimizer.param_groups[-1]['lr'], epoch)
 
 
 def XAI_box(saliencys, lam):
@@ -573,7 +578,7 @@ def rand_bbox_withcenter(size, lam, cx, cy):
     return bbx1, bby1, bbx2, bby2
 
 
-def validate(val_loader, model, criterion, args, log=None, tf_writer=None, flag='val'):
+def validate(val_loader, model, criterion, epoch,args, log, tf_writer, flag='val'):
     batch_time = AverageMeter('Time', ':6.3f')
     losses = AverageMeter('Loss', ':.4e')
     top1 = AverageMeter('Acc@1', ':6.2f')
@@ -637,6 +642,11 @@ def validate(val_loader, model, criterion, args, log=None, tf_writer=None, flag=
             log.write(output + '\n')
             log.write(out_cls_acc + '\n')
             log.flush()
+
+        tf_writer.add_scalar('loss/test_' + flag, losses.avg, epoch)
+        tf_writer.add_scalar('acc/test_' + flag + '_top1', top1.avg, epoch)
+        tf_writer.add_scalar('acc/test_' + flag + '_top5', top5.avg, epoch)
+        tf_writer.add_scalars('acc/test_' + flag + '_cls_acc', {str(i): x for i, x in enumerate(cls_acc)}, epoch)
 
     return top1.avg
 
