@@ -120,7 +120,7 @@ class Imb_iNat_Dataset(Dataset):
     
 
 # Load the imbalanced dataset from the given txt files
-def load_imb_inaturalist(image_dir, transform_train, transfrom_val, use_randaug=False):
+def load_imb_inaturalist(image_dir, transform_train, transform_val, use_randaug=False):
     #load data from txt files
     train_images_list = []
     train_labels_list = []
@@ -128,24 +128,26 @@ def load_imb_inaturalist(image_dir, transform_train, transfrom_val, use_randaug=
     val_labels_list = []
     # if txt file doesnt exist in current directory, create the txt file
     #print current path
+    print("hereeeeeeeee-------")
     print(os.getcwd())
     
-    if not os.path.exists('imbalance_data/iNaturalist_imb_train.txt'):
+    txt_file = 'D:/anita/Research/XAI_Oversample/CMO/imbalance_data/iNaturalist_imb_train.txt'
+    if not os.path.exists(txt_file):
         train_images_list, train_labels_list, val_images_list, val_labels_list = create_imblanced_inat_txt(image_dir)
     else:
-        with open('imbalance_data/iNaturalist_imb_train.txt') as f:
+        with open(txt_file) as f:
             for line in f:
                 train_images_list.append(os.path.join(image_dir, line.split()[0]))
                 train_labels_list.append(int(line.split()[1]))
-        with open('imbalance_data/iNaturalist_imb_val.txt') as f:
+        with open(txt_file) as f:
             for line in f:
                 val_images_list.append(os.path.join(image_dir, line.split()[0]))
                 val_labels_list.append(int(line.split()[1]))
     
-    train_dataset = Imb_iNat_Dataset(image_dir,train_images_list, train_labels_list,transform_train, use_randaug)
-    val_dataset = Imb_iNat_Dataset(image_dir,val_images_list, val_labels_list,transfrom_val, use_randaug)
+    #train_dataset = Imb_iNat_Dataset(image_dir,train_images_list, train_labels_list,transform_train, use_randaug)
+    #val_dataset = Imb_iNat_Dataset(image_dir,val_images_list, val_labels_list,transform_val, use_randaug)
 
-    return train_dataset, val_dataset
+    return train_images_list, train_labels_list, val_images_list, val_labels_list
 
 # Create the imbalanced dataset and save the image directory to txt files
 def create_imblanced_inat_txt(image_dir):  
@@ -193,18 +195,19 @@ def create_imblanced_inat_txt(image_dir):
 
     
     # Save the imbalanced dataset to text files
-    with open('iNaturalist_imb_train.txt', 'w') as img_file:
+    
+    with open('D:/anita/Research/XAI_Oversample/CMO/imbalance_data/iNaturalist_imb_train.txt', 'w') as img_file:
         for i in range(len(train_images_list)):
             #write image path and label in one line: path space label
             img_file.write(train_images_list[i] + ' ' + str(train_labels_list[i]) + '\n')
 
-    with open('iNaturalist_imb_val.txt', 'w') as img_file:
+    with open('D:/anita/Research/XAI_Oversample/CMO/imbalance_data/iNaturalist_imb_val.txt', 'w') as img_file:
         for i in range(len(val_images_list)):
             img_file.write(val_images_list[i] + ' ' + str(val_labels_list[i]) + '\n')
     
     return train_images_list, train_labels_list, val_images_list, val_labels_list
 
-
+'''
 #Testing
 img_dir ='D:/anita/Research/iNaturalist/train/'
 transform_train = transforms.Compose([
@@ -221,3 +224,4 @@ transform_val = transforms.Compose([
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
 train_dataset, val_dataset = load_imb_inaturalist(img_dir, transform_train, transform_val)
+'''

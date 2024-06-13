@@ -30,7 +30,7 @@ import gradcam
 
 args = {}
 args['root'] = './data'
-args['dataset'] = 'cifar10_Test'
+args['dataset'] = 'cifar10'
 args['arch'] = 'resnet32'
 args['loss_type'] = 'CE'
 args['train_rule'] = 'DRW'
@@ -48,9 +48,9 @@ args['print_freq'] = 50
 args['lr'] = 0.1
 args['momentum'] = 0.9
 args['weight_decay'] = 5e-4
-args['epochs'] = 100
+args['epochs'] = 200
 args['start_data_aug'] = 25
-args['end_data_aug'] = 25
+args['end_data_aug'] = 5
 args['use_randaug'] = False
 args['beta'] = 1
 args['data_aug'] = 'CMO_XAI'

@@ -162,7 +162,8 @@ def create_imblanced_imagenet_txt(image_dir):
         class_path = os.path.join(image_dir, class_synset)
         class_files = os.listdir(class_path)
         train_class_files = random.sample(class_files, class_ratios[i]) 
-        val_class_files = random.sample(list(set(class_files) - set(train_class_files)), int(class_ratios[i]*0.2))
+        #val_class_files = random.sample(list(set(class_files) - set(train_class_files)), int(class_ratios[i]*0.2))
+        val_class_files = random.sample(list(set(class_files) - set(train_class_files)), 60)
         for file in train_class_files:
             train_images_list.append(os.path.join(class_path, file))
             train_labels_list.append(i)
@@ -182,7 +183,7 @@ def create_imblanced_imagenet_txt(image_dir):
     
     return train_images_list, train_labels_list, val_images_list, val_labels_list
 
-'''
+
 #Testing
 img_dir ='D:/anita/Research/competitions/imagenet-object-localization-challenge/ILSVRC/ILSVRC/Data/CLS-LOC/train/'
 transform_train = transforms.Compose([
@@ -199,4 +200,3 @@ transform_val = transforms.Compose([
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
 train_dataset, val_dataset = load_imb_imagenet(img_dir, transform_train, transform_val)
-'''
