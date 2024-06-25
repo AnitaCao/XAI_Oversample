@@ -472,6 +472,35 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, 
             loss = loss.mean()
             #print("just for testing purposes: CMO+XAI mixup images: ")
             #testing_plot(input_ori, input2, input)
+                #Use mask to blend input1 and input2 instead of using bouding box.    
+        elif args['data_aug'] == 'CMO_XAI_MASK' and args['start_data_aug'] < epoch < (
+            args['epochs'] - args['end_data_aug']) and r < args["mixup_prob"]:
+                        # generate mixed sample
+            lam = np.random.beta(args["beta"], args["beta"])
+            print("---Calling XAI_MASK. Batch number: ", i)
+            start = time.time()
+            saliencys, _ = gradcam(input2, None) 
+            
+            #saliency_visualisation(input2, saliencys)
+            
+            time1 = time.time()
+            print('Total time to generate saliencys is: {:.2f} second'.format((time1-start))) 
+
+            MASK_list, lam_list = XAI_MASK(saliencys, lam) # TODO: lam should be used as the threshold for the ROI, current threshold is 0.5
+            
+            # Convert refined_binary_masks to a torch tensor if it isn't already
+            MASK_list = torch.tensor(MASK_list, dtype=torch.float32).cuda(args['gpu'])
+
+            #repace input's area with input2's area based on bounding box
+            input_ori = input.clone() # save the original input for display purposes
+
+            # Use the mask to blend input1 and input2
+            input = MASK_list * input2 + (1 - MASK_list) * input
+            output = model(input)
+            loss = criterion(output, target) * torch.tensor(lam_list).cuda(args['gpu']) + criterion(output, target2) * (1. - torch.tensor(lam_list).cuda(args['gpu']))
+            loss = loss.mean()
+            #print("Just for testing purposes: CMO+XAI mixup images: ")
+            #testing_plot(input_ori, input2, input)
         else:
             output = model(input) #output.size() = [128, 10], 128 is batch size, 10 is number of classes
             loss = criterion(output, target)
@@ -509,6 +538,24 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, 
     #tf_writer.add_scalar('acc/train_top5', top5.avg, epoch)
     #tf_writer.add_scalar('lr', optimizer.param_groups[-1]['lr'], epoch)
 
+def XAI_MASK(saliencys, lam):
+    # saliency is a batch of saliency maps. For example: 32 by 1 by 224 by 224   
+    #TODO: threshold should be related to lam.
+    threshold = 0.5
+    binary_masks = (saliencys > threshold).astype(np.uint8)
+    #binary_masks = np.squeeze(binary_masks, axis=1)
+    
+    refined_binary_masks = np.array([refine_mask(mask[0]) for mask in binary_masks])   
+    # Calculate the share of the ROI for each mask in the batch
+    roi_shares = np.mean(refined_binary_masks, axis=(1, 2))
+
+    return binary_masks,roi_shares
+
+def refine_mask(mask):
+    kernel = np.ones((3, 3), np.uint8)
+    refined_mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    refined_mask = cv2.morphologyEx(refined_mask, cv2.MORPH_OPEN, kernel)
+    return refined_mask
 
 def XAI_box(saliencys, lam):
 
