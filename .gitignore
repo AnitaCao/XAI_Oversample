@@ -21,12 +21,15 @@ RC_scripts/
 CMO/imbalance_data/*.txt
 
 # files only in RC account for testing purposes. Remove before submit.
-CMO/cifar_train_cmo.py
+CMO/cifar_train_cmo_10.py
 CMO/cifar_train_cmo_100.py
 CMO/cifar_train_cmo_xai_100.py
-CMO/imagenet_train_cmo.py
 CMO/imagenet_train_cmo_1000.py
 CMO/imagenet_train_cmo_xai_1000.py
 CMO/imagenet_train_cmo_10.py
 CMO/imagenet_train_cmo_xai_mask_10.py
 CMO/imagenet_train_cmo_xai_mask_1000.py
+CMO/cifar_huggingface_train_cmo_10.py
+CMO/cifar_huggingface_train_cmo_xai_mask_10.py
+CMO/iNaturalist_train_cmo_10.py
+CMO/iNaturalist_train_cmo_xai_mask_10.py
