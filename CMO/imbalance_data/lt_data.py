@@ -183,7 +183,7 @@ def create_imblanced_imagenet_txt(image_dir):
     
     return train_images_list, train_labels_list, val_images_list, val_labels_list
 
-
+'''
 #Testing
 img_dir ='D:/anita/Research/competitions/imagenet-object-localization-challenge/ILSVRC/ILSVRC/Data/CLS-LOC/train/'
 transform_train = transforms.Compose([
@@ -200,3 +200,4 @@ transform_val = transforms.Compose([
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
 train_dataset, val_dataset = load_imb_imagenet(img_dir, transform_train, transform_val)
+'''
