@@ -8,10 +8,10 @@ import torch.optim
 import torch.utils.data
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
-from imbalance_data.imbalance_cifar import IMBALANCECIFAR10, IMBALANCECIFAR100
+from datasets import load_dataset
 import models
 import torchvision.models as torch_models
-from tensorboardX import SummaryWriter
+from PIL import Image
 
 #from losses import LDAMLoss, BalancedSoftmaxLoss
 from losses import *
@@ -30,11 +30,11 @@ import gradcam
 
 args = {}
 args['root'] = './data'
-args['dataset'] = 'cifar10'
+args['dataset'] = 'tomas-gajarsky_cifar10-lt'
 args['arch'] = 'resnet32'
 args['loss_type'] = 'CE'
 args['train_rule'] = 'DRW'
-args['imb_factor'] = 0.01
+args['imb_factor'] = 0.1
 args['rand_number'] = 0
 args['mixup_prob'] = 0.6 #TODO: Q:mixup_prob should be related to the ratio of imbalance?
 args['exp_str'] = 'exp'
@@ -42,19 +42,19 @@ args['seed'] = None
 args['gpu'] = 0
 args['resume'] = False
 args['start_epoch'] = 0
-args['batch_size'] = 128
-args['workers'] = 4
+args['batch_size'] = 16
+args['workers'] = 0 # 4
 args['print_freq'] = 50
 args['lr'] = 0.1
 args['momentum'] = 0.9
 args['weight_decay'] = 5e-4
 args['epochs'] = 200
-args['start_data_aug'] = 25
+args['start_data_aug'] = 25 #25
 args['end_data_aug'] = 5
 args['use_randaug'] = False
 args['beta'] = 1
-args['data_aug'] = 'CMO_XAI'
-args['weighted_alpha'] = 0.5
+args['data_aug'] = 'CMO'
+args['weighted_alpha'] = 1 
 args['num_classes'] = 10
 args['root_log'] = './logs'
 args['root_model'] = './checkpoint'
@@ -203,42 +203,85 @@ def main_worker(gpu, ngpus_per_node, args):
 
     print(args)
     if num_classes == 10:
-        train_dataset = IMBALANCECIFAR10(root=args["root"], imb_factor=args["imb_factor"],
-                                         rand_number=args["rand_number"], weighted_alpha=args["weighted_alpha"], train=True, download=True,
-                                         transform=transform_train, use_randaug=args["use_randaug"])
-        val_dataset = datasets.CIFAR10(root=args["root"], train=False, download=True, transform=transform_val)
+        #imbalance_data_path = os.path.join(os.getcwd(), 'imbalance_data\cifar10-lt.py')
+        #print(imbalance_data_path)
+        train_dataset = load_dataset("tomas-gajarsky/cifar10-lt", 'r-10', split="train", trust_remote_code=True)
+        val_dataset = load_dataset("tomas-gajarsky/cifar10-lt", 'r-10', split="test", trust_remote_code=True)  
+        #train_dataset = load_dataset(imbalance_data_path, 'r-10', split="train", trust_remote_code=True)
+        #val_dataset = load_dataset(imbalance_data_path, 'r-10', split="test", trust_remote_code=True)      
     elif num_classes == 100:
-        train_dataset = IMBALANCECIFAR100(root=args["root"], imb_factor=args["imb_factor"],
-                                      rand_number=args["rand_number"], weighted_alpha=args["weighted_alpha"], train=True, download=True,
-                                      transform=transform_train, use_randaug=args["use_randaug"])
-        val_dataset = datasets.CIFAR100(root=args["root"], train=False, download=True, transform=transform_val)
+        train_dataset = load_dataset("tomas-gajarsky/cifar100-lt", 'r-10', split="train", trust_remote_code=True)
+        val_dataset = load_dataset("tomas-gajarsky/cifar100-lt", 'r-10', split="test", trust_remote_code=True)
     else:
         warnings.warn('Dataset is not listed')
         return
-    cls_num_list = train_dataset.get_cls_num_list()
+    #calculate the number of samples in each class from the training dataset
+    cls_num_list = [0] * num_classes
+    for example in train_dataset:
+        label = example['label']
+        cls_num_list[label] += 1
+    
     print('cls num list:') 
     print(cls_num_list) #[5000, 2997, 1796, 1077, 645, 387, 232, 139, 83, 50]
     print("total number of samples: ", sum(cls_num_list)) #total number of samples:  12006
     args["cls_num_list"] = cls_num_list
     train_cls_num_list = np.array(cls_num_list)
+    
+    print("Sample before transformation:")
+    sample_train = train_dataset[0]
+    print(f"Image type: {type(sample_train['img'])}, Image: {sample_train['img']}")
+    sample_val = val_dataset[0]
+    print(f"Image type: {type(sample_val['img'])}, Image: {sample_val['img']}")
+     
+    
+
+    # Apply the transformation to the training dataset
+    train_dataset = val_dataset.map(lambda x: {'img': transform_train(Image.fromarray(np.array(x['img']))), 'label': x['label']}, batched=False)
+
+    # Apply the transformation to the validation dataset
+    val_dataset = val_dataset.map(lambda x: {'img': transform_val(Image.fromarray(np.array(x['img']))), 'label': x['label']}, batched=False)
+    
 
     train_sampler = None
 
     train_loader = torch.utils.data.DataLoader(
             train_dataset, batch_size=args["batch_size"], shuffle=(train_sampler is None),
-            num_workers=4, pin_memory=True, sampler=train_sampler)
+            num_workers=args['workers'], pin_memory=True, sampler=train_sampler)
 
     val_loader = torch.utils.data.DataLoader(
         val_dataset, batch_size=args["batch_size"], shuffle=False,
-        num_workers=4, pin_memory=True)
+        num_workers=args['workers'], pin_memory=True)
     weighted_train_loader = None
     weighted_cls_num_list = [0] * num_classes
 
     if args["data_aug"].startswith('CMO'):
-        weighted_sampler = train_dataset.get_weighted_sampler()
-        weighted_train_loader = torch.utils.data.DataLoader(
-            train_dataset, batch_size=args["batch_size"],
-            num_workers=4, pin_memory=True, sampler=weighted_sampler)
+        targets = train_dataset['label']
+        cls_weight = 1.0 / (np.array(cls_num_list) ** args['weighted_alpha'])
+        cls_weight = cls_weight / np.sum(cls_weight) * len(cls_num_list)
+        
+        samples_weight = np.array([cls_weight[t] for t in targets])
+        samples_weight = torch.from_numpy(samples_weight)
+        samples_weight = samples_weight.double()
+        
+        print(samples_weight)
+        weighted_sampler = torch.utils.data.WeightedRandomSampler(samples_weight, len(samples_weight),
+                                                                  replacement=True)
+        weighted_train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args['batch_size'],
+                                                            num_workers=args['workers'], pin_memory=True,
+                                                            sampler=weighted_sampler)
+        
+        '''
+        #testing the weighted sampler
+        for i, batch in enumerate(weighted_train_loader):
+            input, target = batch['img'], batch['label']
+            #print("target: ", target)
+            for t in target:
+                weighted_cls_num_list[t] += 1
+        print("weighted cls num list:")
+        print(weighted_cls_num_list)
+        print("total number of samples: ", sum(weighted_cls_num_list))
+        print("weighted sampler testing finished")
+        '''    
 
     cls_num_list_cuda = torch.from_numpy(np.array(cls_num_list)).float().cuda()
 
@@ -247,7 +290,7 @@ def main_worker(gpu, ngpus_per_node, args):
     log_testing = open(os.path.join(args["root_log"], args["store_name"], 'log_test.csv'), 'w')
     with open(os.path.join(args["root_log"], args["store_name"], 'args.txt'), 'w') as f:
         f.write(str(args))
-    tf_writer = SummaryWriter(log_dir=os.path.join(args["root_log"], args["store_name"]))
+    #tf_writer = SummaryWriter(log_dir=os.path.join(args["root_log"], args["store_name"]))
 
     start_time = time.time()
     print("Training started!")
@@ -292,17 +335,16 @@ def main_worker(gpu, ngpus_per_node, args):
             return
 
         # train for one epoch
-        train(train_loader, model, gc, criterion, optimizer, epoch, args, log_training,
-              tf_writer, weighted_train_loader)
+        train(train_loader, model, gc, criterion, optimizer, epoch, args, log_training, weighted_train_loader)
 
         # evaluate on validation set
-        acc1 = validate(val_loader, model, criterion, epoch, args, log_testing, tf_writer)
+        acc1 = validate(val_loader, model, criterion, epoch, args, log_testing)
 
         # remember best acc@1 and save checkpoint
         is_best = acc1 > best_acc1
         best_acc1 = max(acc1, best_acc1)
 
-        tf_writer.add_scalar('acc/test_top1_best', best_acc1, epoch)
+        #tf_writer.add_scalar('acc/test_top1_best', best_acc1, epoch)
         output_best = 'Best Prec@1: %.3f\n' % (best_acc1)
         print(output_best)
         log_testing.write(output_best + '\n')
@@ -328,8 +370,7 @@ def hms_string(sec_elapsed):
     return "{}:{:>02}:{:>05.2f}".format(h, m, s)
 
 
-def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log,
-              tf_writer, weighted_train_loader=None):
+def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, weighted_train_loader=None):
     batch_time = AverageMeter('Time', ':6.3f')
     data_time = AverageMeter('Data', ':6.3f')
     losses = AverageMeter('Loss', ':.4e')
@@ -343,13 +384,28 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log,
     if args["data_aug"].startswith('CMO') and args["start_data_aug"] < epoch < (args["epochs"] - args["end_data_aug"]):
         inverse_iter = iter(weighted_train_loader)
 
-    for i, (input, target) in enumerate(train_loader):
+    for i, batch in enumerate(train_loader):
+        input, target = batch['img'], batch['label']
+        
+        if isinstance(input, list):
+            # Convert nested list to tensor
+            input = torch.stack([torch.stack([torch.stack(channel) for channel in img], dim=0) for img in input], dim=0).permute(3,0,1,2)
+            input = input.float()
+        
         if args["data_aug"].startswith('CMO') and args["start_data_aug"] < epoch < (args["epochs"] - args["end_data_aug"]):
             try:
-                input2, target2 = next(inverse_iter)
+                batch2 = next(inverse_iter)
+                input2, target2 = batch2['img'], batch2['label']
             except:
                 inverse_iter = iter(weighted_train_loader)
-                input2, target2 = next(inverse_iter)
+                batch2 = next(inverse_iter)
+                input2, target2 = batch2['img'], batch2['label']
+                
+            if isinstance(input2, list):
+            # Convert nested list to tensor
+                input2 = torch.stack([torch.stack([torch.stack(channel) for channel in img], dim=0) for img in input2], dim=0).permute(3,0,1,2)
+                input2 = input2.float()
+            
             input2 = input2[:input.size()[0]]
             target2 = target2[:target.size()[0]]
             input2 = input2.cuda(args["gpu"], non_blocking=True)
@@ -377,8 +433,8 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log,
             output = model(input)
             loss = criterion(output, target) * lam + criterion(output, target2) * (1. - lam)
             #testing_plot(input, input2)
-            print("just for testing purposes: CMO random mixup images: ")
-            testing_plot(input_ori, input2, input)
+            #print("just for testing purposes: CMO random mixup images: ")
+            #testing_plot(input_ori, input2, input)
 
         elif args['data_aug'] == 'CMO_XAI' and args['start_data_aug'] < epoch < (
                 args['epochs'] - args['end_data_aug']) and r < args["mixup_prob"]:
@@ -448,10 +504,10 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log,
             log.write(output + '\n')
             log.flush()
 
-    tf_writer.add_scalar('loss/train', losses.avg, epoch)
-    tf_writer.add_scalar('acc/train_top1', top1.avg, epoch)
-    tf_writer.add_scalar('acc/train_top5', top5.avg, epoch)
-    tf_writer.add_scalar('lr', optimizer.param_groups[-1]['lr'], epoch)
+    #tf_writer.add_scalar('loss/train', losses.avg, epoch)
+    #tf_writer.add_scalar('acc/train_top1', top1.avg, epoch)
+    #tf_writer.add_scalar('acc/train_top5', top5.avg, epoch)
+    #tf_writer.add_scalar('lr', optimizer.param_groups[-1]['lr'], epoch)
 
 
 def XAI_box(saliencys, lam):
@@ -507,7 +563,7 @@ def rand_bbox_withcenter(size, lam, cx, cy):
     return bbx1, bby1, bbx2, bby2
 
 
-def validate(val_loader, model, criterion, epoch, args, log=None, tf_writer=None, flag='val'):
+def validate(val_loader, model, criterion, epoch, args, log=None, flag='val'):
     batch_time = AverageMeter('Time', ':6.3f')
     losses = AverageMeter('Loss', ':.4e')
     top1 = AverageMeter('Acc@1', ':6.2f')
@@ -519,7 +575,14 @@ def validate(val_loader, model, criterion, epoch, args, log=None, tf_writer=None
     all_targets = []
     with torch.no_grad():
         end = time.time()
-        for i, (input, target) in enumerate(val_loader):
+        for i, batch in enumerate(val_loader):
+            input, target = batch['img'], batch['label']
+        
+            if isinstance(input, list):
+                # Convert nested list to tensor
+                input = torch.stack([torch.stack([torch.stack(channel) for channel in img], dim=0) for img in input], dim=0).permute(3,0,1,2)
+                input = input.float()
+            
             input = input.cuda(args["gpu"], non_blocking=True)
             target = target.cuda(args["gpu"], non_blocking=True)
 
@@ -574,10 +637,10 @@ def validate(val_loader, model, criterion, epoch, args, log=None, tf_writer=None
             log.write(out_cls_acc + '\n')
             log.flush()
 
-        tf_writer.add_scalar('loss/test_' + flag, losses.avg, epoch)
-        tf_writer.add_scalar('acc/test_' + flag + '_top1', top1.avg, epoch)
-        tf_writer.add_scalar('acc/test_' + flag + '_top5', top5.avg, epoch)
-        tf_writer.add_scalars('acc/test_' + flag + '_cls_acc', {str(i): x for i, x in enumerate(cls_acc)}, epoch)
+        #tf_writer.add_scalar('loss/test_' + flag, losses.avg, epoch)
+        #tf_writer.add_scalar('acc/test_' + flag + '_top1', top1.avg, epoch)
+        #tf_writer.add_scalar('acc/test_' + flag + '_top5', top5.avg, epoch)
+        #tf_writer.add_scalars('acc/test_' + flag + '_cls_acc', {str(i): x for i, x in enumerate(cls_acc)}, epoch)
 
     return top1.avg
 

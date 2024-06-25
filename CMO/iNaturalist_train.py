@@ -15,7 +15,7 @@ import torch.utils.data
 import torchvision.transforms as transforms
 import torchvision.models as models
 from tensorboardX import SummaryWriter
-from imbalance_data.lt_data import LT_Dataset, Imb_Dataset, load_imb_imagenet
+from imbalance_data.imbalance_iNaturalist import load_imb_inaturalist, Imb_iNat_Dataset
 from losses import LDAMLoss, BalancedSoftmaxLoss
 import warnings
 from torch.nn import Parameter
@@ -35,9 +35,8 @@ import gradcam
 
 
 args = {}
-args['root'] = 'D:/anita/Research/competitions/imagenet-object-localization-challenge/ILSVRC/ILSVRC/Data/CLS-LOC/' #my local machine
-#args['root] = /home/tcvcs/image_datasets/ILSVRC/Data/CLS-LOC/' #my RC accout
-args['dataset'] = 'ImageNet_Imb'
+args['root'] = 'D:/anita/Research/iNaturalist/'
+args['dataset'] = 'iNaturalist'
 args['arch'] = 'resnet50'
 args['loss_type'] = 'BS'
 args['train_rule'] = 'DRW'
@@ -49,18 +48,18 @@ args['seed'] = None
 args['gpu'] = 0
 args['resume'] = False
 args['start_epoch'] = 0
-args['batch_size'] = 128 #128
+args['batch_size'] = 16 #128
 args['workers'] = 4
 args['print_freq'] = 100
 args['lr'] = 0.1
 args['momentum'] = 0.9
 args['weight_decay'] = 5e-4
-args['epochs'] = 100
+args['epochs'] = 200
 args['start_data_aug'] = 25 # start data augmentation after 25th epoch
 args['end_data_aug'] = 25 # do not use data augmentation for the last 25 epoches
 args['use_randaug'] = False
 args['beta'] = 1
-args['data_aug'] = 'CMO' # 'CMO' or 'CMO_XAI'
+args['data_aug'] = 'CMO' # 'CMO' or 'CMO_XAI' or 'CMO_XAI_MASK'
 args['weighted_alpha'] = 0.5
 args['num_classes'] = 10 #1000
 args['root_log'] = './logs'
@@ -215,29 +214,17 @@ def main_worker(gpu, ngpus_per_node, args):
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
 
-  
-
-    '''
-    Current dataset is a long tailed dataset with 1000 classes (from CMO paper).
-    TODO: Create different Datases with different imbalance ratio. 
-    '''
-
-    if args['num_classes'] == 1000:
-        print("Using ImageNet_LT dataset")
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        train_path = os.path.join(script_dir, 'ImageNet_LT', 'ImageNet_LT_train.txt')
-        val_path = os.path.join(script_dir, 'ImageNet_LT', 'ImageNet_LT_val.txt')
-        train_dataset = LT_Dataset(args['root'], train_path, transform_train,
-                               use_randaug=args['use_randaug'])
-        val_dataset = LT_Dataset(args['root'], val_path, transform_val)
-        num_classes = len(np.unique(train_dataset.targets))
-        assert num_classes == 1000
-    else:
-        data_path = os.path.join(args['root'], 'train')
-        #train_dataset = Imb_Dataset(data_path, transform_train, use_randaug=args['use_randaug'], datatype='train')
-        #val_dataset = Imb_Dataset(data_path, transform_val, use_randaug=args['use_randaug'], datatype='val')
-        train_dataset, val_dataset = load_imb_imagenet(data_path, transform_train, transform_val)
-        num_classes = len(np.unique(train_dataset.targets))
+    data_path = os.path.join(args['root'], 'train')
+    #train_dataset = Imb_Dataset(data_path, transform_train, use_randaug=args['use_randaug'], datatype='train')
+    #val_dataset = Imb_Dataset(data_path, transform_val, use_randaug=args['use_randaug'], datatype='val')
+    train_images_list, train_labels_list, val_images_list, val_labels_list = load_imb_inaturalist(data_path, transform_train, transform_val)
+    
+    train_dataset = Imb_iNat_Dataset(data_path,train_images_list, train_labels_list,transform_train)
+    val_dataset = Imb_iNat_Dataset(data_path,val_images_list, val_labels_list,transform_val)
+    
+    #train_dataset, val_dataset = load_imb_inaturalist(data_path, transform_train, transform_val)
+    
+    num_classes = len(np.unique(train_dataset.targets))
 
     print("Number of classes: ", num_classes)
     print("Number of training samples: ", len(np.unique(val_dataset.targets)))
@@ -306,7 +293,7 @@ def main_worker(gpu, ngpus_per_node, args):
             per_cls_weights = torch.FloatTensor(per_cls_weights).cuda(args['gpu'])
         elif args['train_rule'] == 'DRW':
             train_sampler = None
-            idx = epoch // 80
+            idx = epoch // 160
             betas = [0, 0.9999]
             effective_num = 1.0 - np.power(betas[idx], cls_num_list)
             per_cls_weights = (1.0 - betas[idx]) / np.array(effective_num)
@@ -420,6 +407,9 @@ def train(train_loader, model, gc, criterion, optimizer, epoch, args, log,
             print("---Calling XAI_Box. Batch number: ", i)
             start = time.time()
             saliencys, _ = gc(input2, None) 
+            
+            #saliency_visualisation(input2, saliencys)
+            
             time1 = time.time()
             print('Total time to generate saliencys is: {:.2f} second'.format((time1-start))) 
 
@@ -444,6 +434,37 @@ def train(train_loader, model, gc, criterion, optimizer, epoch, args, log,
             loss = loss.mean()
             print("Just for testing purposes: CMO+XAI mixup images: ")
             testing_plot(input_ori, input2, input)
+        
+        #Use mask to blend input1 and input2 instead of using bouding box.    
+        elif args['data_aug'] == 'CMO_XAI_MASK' and args['start_data_aug'] < epoch < (
+            args['epochs'] - args['end_data_aug']) and r < args["mixup_prob"]:
+                        # generate mixed sample
+            lam = np.random.beta(args["beta"], args["beta"])
+            print("---Calling XAI_MASK. Batch number: ", i)
+            start = time.time()
+            saliencys, _ = gc(input2, None) 
+            
+            #saliency_visualisation(input2, saliencys)
+            
+            time1 = time.time()
+            print('Total time to generate saliencys is: {:.2f} second'.format((time1-start))) 
+
+            MASK_list, lam_list = XAI_MASK(saliencys, lam) # TODO: lam should be used as the threshold for the ROI, current threshold is 0.5
+            
+            # Convert refined_binary_masks to a torch tensor if it isn't already
+            MASK_list = torch.tensor(MASK_list, dtype=torch.float32).cuda(args['gpu'])
+
+            #repace input's area with input2's area based on bounding box
+            input_ori = input.clone() # save the original input for display purposes
+
+            # Use the mask to blend input1 and input2
+            input = MASK_list * input2 + (1 - MASK_list) * input
+            output = model(input)
+            loss = criterion(output, target) * torch.tensor(lam_list).cuda(args['gpu']) + criterion(output, target2) * (1. - torch.tensor(lam_list).cuda(args['gpu']))
+            loss = loss.mean()
+            #print("Just for testing purposes: CMO+XAI mixup images: ")
+            #testing_plot(input_ori, input2, input)
+                
         else:
             output = model(input)
             loss = criterion(output, target).mean()
@@ -481,14 +502,28 @@ def train(train_loader, model, gc, criterion, optimizer, epoch, args, log,
     tf_writer.add_scalar('acc/train_top5', top5.avg, epoch)
     tf_writer.add_scalar('lr', optimizer.param_groups[-1]['lr'], epoch)
 
+def XAI_MASK(saliencys, lam):
+    # saliency is a batch of saliency maps. For example: 32 by 1 by 224 by 224   
+    #TODO: threshold should be related to lam.
+    threshold = 0.5
+    binary_masks = (saliencys > threshold).astype(np.uint8)
+    #binary_masks = np.squeeze(binary_masks, axis=1)
+    
+    refined_binary_masks = np.array([refine_mask(mask[0]) for mask in binary_masks])   
+    # Calculate the share of the ROI for each mask in the batch
+    roi_shares = np.mean(refined_binary_masks, axis=(1, 2))
+
+    return binary_masks,roi_shares
+
+def refine_mask(mask):
+    kernel = np.ones((3, 3), np.uint8)
+    refined_mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    refined_mask = cv2.morphologyEx(refined_mask, cv2.MORPH_OPEN, kernel)
+    return refined_mask
 
 def XAI_box(saliencys, lam):
 
-    # saliency is a batch of saliency maps. For example: 32 by 1 by 224 by 224
-
-    #print('Saliency generated by Grad-CAM')
-    #saliency_visualisation(batch, saliency) #visualise the saliency map
-    
+    # saliency is a batch of saliency maps. For example: 32 by 1 by 224 by 224   
     #TODO: threshold should be related to lam.
     threshold = 0.5 
 
@@ -623,21 +658,41 @@ def validate(val_loader, model, criterion, epoch,args, log, tf_writer, flag='val
                     top1=top1, top5=top5))
                 print(output)
         cf = confusion_matrix(all_targets, all_preds).astype(float)
-        cls_cnt = cf.sum(axis=1)
-        cls_hit = np.diag(cf)
-        cls_acc = cls_hit / cls_cnt
+        cls_cnt = cf.sum(axis=1) # the number of ground truth class
+        cls_hit = np.diag(cf) # the number of correctly predicted class
+        cls_acc = cls_hit / cls_cnt # the accuracy of each class, namely, tpr = true positive / total positive
         output = ('{flag} Results: Prec@1 {top1.avg:.3f} Prec@5 {top5.avg:.3f} Loss {loss.avg:.5f}'
                   .format(flag=flag, top1=top1, top5=top5, loss=losses))
+        print(output)
+        
         out_cls_acc = '%s Class Accuracy: %s' % (
         flag, (np.array2string(cls_acc, separator=',', formatter={'float_kind': lambda x: "%.3f" % x})))
-        print(output)
-
+        print(out_cls_acc)
+        
+        #calcuate Gmean, ACSA, ACC
+        gmean = np.prod(cls_acc) ** (1.0 / len(cls_acc))
+        acsa = np.mean(cls_acc)
+        acc = np.sum(cls_hit) / np.sum(cls_cnt)
+        print('Gmean: %.3f, ACSA: %.3f, ACC: %.3f' % (gmean, acsa, acc))
+        
+        
+        
+        #[2000, 1500, 1000, 800, 650, 500, 350, 200, 120, 60]
+        many = train_cls_num_list > 1000
+        medium = (train_cls_num_list <= 1000) & (train_cls_num_list > 200)
+        few = train_cls_num_list <= 200
+        print("many avg(>1000), med avg(200-1000), few avg(<200)", float(sum(cls_acc[many]) * 100 / sum(many)),
+              float(sum(cls_acc[medium]) * 100 / sum(medium)),
+              float(sum(cls_acc[few]) * 100 / sum(few)))
+        
+        '''
         many_shot = train_cls_num_list > 100
         medium_shot = (train_cls_num_list <= 100) & (train_cls_num_list > 20)
         few_shot = train_cls_num_list <= 20
         print("many avg, med avg, few avg", float(sum(cls_acc[many_shot]) * 100 / sum(many_shot)),
               float(sum(cls_acc[medium_shot]) * 100 / sum(medium_shot)),
               float(sum(cls_acc[few_shot]) * 100 / sum(few_shot)))
+        '''
 
         if log is not None:
             log.write(output + '\n')
