@@ -18,6 +18,7 @@ CMO/logs/
 RC_scripts/
 *.yml
 *.txt
+CMO/imbalance_data/*.txt
 
 # files only in RC account for testing purposes. Remove before submit.
 CMO/cifar_train_cmo.py
