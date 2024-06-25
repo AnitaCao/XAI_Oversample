@@ -15,13 +15,3 @@ ImageNet_LT/
 *.npz
 *.pkl
 CMO/logs/
-RC_scripts/
-*.yml
-CMO/cifar_train_cmo.py # for testing porpuses only - remove before submission
-CMO/cifar_train_cmo_100.py # for testing porpuses only - remove before submission
-CMO/cifar_train_cmo_xai_100.py # for testing porpuses only - remove before submission
-CMO/imagenet_train_cmo.py # for testing porpuses only - remove before submission
-CMO/imagenet_train_cmo_1000.py # for testing porpuses only - remove before submission
-CMO/imagenet_train_cmo_xai_1000.py # for testing porpuses only - remove before submission
-CMO/imbalance_data/ImageNet_imb_train_old.txt # for testing porpuses only - remove before submission
-CMO/imbalance_data/ImageNet_imb_val_0.2ratio.txt # for testing porpuses only - remove before submission
