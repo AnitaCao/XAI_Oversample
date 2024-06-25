@@ -48,17 +48,13 @@ class iNat_Dataset(Dataset):
     
 '''
 # Desired class ratios
-class_ratios = [4000, 2000, 1000, 750, 500, 350, 200, 100, 60, 40]
-num_classes = 10
-class_synset_list = ['n01558993', 'n01855672', 'n01514668', 'n01608432', 'n02342885', 
-    'n01518878', 'n01860187', 'n02356798', 'n02325366', 'n01614925']
+class_ratios = [2000, 1500, 1000, 800, 650, 500, 350, 200, 120, 60]
+class_synset_list = ['00680-00705', '01962-01979', '03594-03607','04756-04764', 
+    '01392-01398', '01703-01707',  '04416-04419', '04819-04822', '04416-04419', '04739-04740']
+TODO: add class names
 '''
 class Imb_iNat_Dataset(Dataset):
-    def __init__(self, img_dir, img_path_list, labels_list, transform=None, use_randaug=False, datatype='train',
-                 num_classes=10,
-                 class_ratios=[1200, 1000, 850, 750, 550, 350, 250, 150, 100, 60],
-                 class_synset_list = ['01971', '01903','01849','00648', '00629', 
-                                      '00817', '00820', '01298', '01752', '00534']):   
+    def __init__(self, img_dir, img_path_list, labels_list, transform=None, use_randaug=False, datatype='train'):    
         self.transform = transform
         self.use_randaug = use_randaug
         self.img_path = []
@@ -70,28 +66,13 @@ class Imb_iNat_Dataset(Dataset):
             self.img_path = img_path_list
             self.labels = labels_list
         else:
-            # create imbalanced dataset from given directory and class_ratios and class_synset_list 
-            # (randomly sample files from each class based on class_ratios)
-            self.img_path = []
-            self.labels = []
-            #load data from path and class_synset_list based on class_ratios
-            for i in range(num_classes):
-                class_synset = class_synset_list[i]
-                class_path = os.path.join(img_dir, class_synset)
-                class_files = os.listdir(class_path)
-
-                #randomly sample class_ratios[i] number of files from class_path with seed 42   
-                random.seed(42)
-                class_ratio = class_ratios[i]
-                train_class_files = random.sample(class_files, class_ratio) 
-                val_class_files = random.sample(list(set(class_files) - set(train_class_files)), int(class_ratio*0.2))
-                if datatype == 'train':
-                    class_files = train_class_files
-                else: #validation
-                    class_files = val_class_files
-                for file in class_files:
-                    self.img_path.append(os.path.join(class_path, file))
-                    self.labels.append(i)
+            train_images_list, train_labels_list, val_images_list, val_labels_list = create_imblanced_inat_txt(img_dir)
+            if datatype == 'train':
+                self.img_path = train_images_list
+                self.labels = train_labels_list
+            else:
+                self.img_path = val_images_list
+                self.labels = val_labels_list      
         self.targets = self.labels  # Sampler needs to use targets
 
     def __len__(self):
@@ -128,7 +109,7 @@ def load_imb_inaturalist(image_dir, transform_train, transform_val, use_randaug=
     val_labels_list = []
     # if txt file doesnt exist in current directory, create the txt file
     #print current path
-    print("hereeeeeeeee-------")
+    print("loading imbalanced iNaturalist data-------")
     print(os.getcwd())
     
     txt_file = 'D:/anita/Research/XAI_Oversample/CMO/imbalance_data/iNaturalist_imb_train.txt'
