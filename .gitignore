@@ -17,6 +17,7 @@ ImageNet_LT/
 CMO/logs/
 RC_scripts/
 *.yml
+*.txt
 
 # files only in RC account for testing purposes. Remove before submit.
 CMO/cifar_train_cmo.py
