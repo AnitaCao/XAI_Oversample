@@ -15,3 +15,5 @@ ImageNet_LT/
 *.npz
 *.pkl
 CMO/logs/
+RC_scripts/
+.yml
