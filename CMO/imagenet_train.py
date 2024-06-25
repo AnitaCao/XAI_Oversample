@@ -35,7 +35,8 @@ import gradcam
 
 
 args = {}
-args['root'] = 'D:/anita/Research/competitions/imagenet-object-localization-challenge/ILSVRC/ILSVRC/Data/CLS-LOC/'
+args['root'] = 'D:/anita/Research/competitions/imagenet-object-localization-challenge/ILSVRC/ILSVRC/Data/CLS-LOC/' #my local machine
+#args['root] = /home/tcvcs/image_datasets/ILSVRC/Data/CLS-LOC/' #my RC accout
 args['dataset'] = 'ImageNet_Imb'
 args['arch'] = 'resnet50'
 args['loss_type'] = 'BS'
