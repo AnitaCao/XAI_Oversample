@@ -671,6 +671,14 @@ def validate(val_loader, model, criterion, epoch, args, log=None, flag='val'):
         print(output)
         # print(out_cls_acc)
 
+        #calcuate Gmean, ACSA, ACC
+        gmean = np.prod(cls_acc) ** (1.0 / len(cls_acc))
+        acsa = np.mean(cls_acc)
+        acc = np.sum(cls_hit) / np.sum(cls_cnt)
+        out_gm_acsa_acc = '%s Gmean: %.3f, ACSA: %.3f, ACC: %.3f' % (flag, gmean, acsa, acc)
+        #print('Gmean: %.3f, ACSA: %.3f, ACC: %.3f' % (gmean, acsa, acc))
+        print(out_gm_acsa_acc)
+
         if args["imb_factor"] == 0.01:
             many_shot = train_cls_num_list > 100
             medium_shot = (train_cls_num_list <= 100) & (train_cls_num_list >= 20)
@@ -682,6 +690,7 @@ def validate(val_loader, model, criterion, epoch, args, log=None, flag='val'):
         if log is not None:
             log.write(output + '\n')
             log.write(out_cls_acc + '\n')
+            log.write(out_gm_acsa_acc + '\n')
             log.flush()
 
         #tf_writer.add_scalar('loss/test_' + flag, losses.avg, epoch)
