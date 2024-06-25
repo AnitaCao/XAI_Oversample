@@ -112,7 +112,8 @@ def load_imb_inaturalist(image_dir, transform_train, transform_val, use_randaug=
     print("loading imbalanced iNaturalist data-------")
     print(os.getcwd())
     
-    txt_file = 'D:/anita/Research/XAI_Oversample/CMO/imbalance_data/iNaturalist_imb_train.txt'
+    #txt_file = 'D:/anita/Research/XAI_Oversample/CMO/imbalance_data/iNaturalist_imb_train.txt' #local PC
+    txt_file = '/home/tcvcs/XAI_Oversample/CMO/imbalance_data/iNaturalist_imb_train.txt'
     if not os.path.exists(txt_file):
         train_images_list, train_labels_list, val_images_list, val_labels_list = create_imblanced_inat_txt(image_dir)
     else:
@@ -176,13 +177,16 @@ def create_imblanced_inat_txt(image_dir):
 
     
     # Save the imbalanced dataset to text files
-    
-    with open('D:/anita/Research/XAI_Oversample/CMO/imbalance_data/iNaturalist_imb_train.txt', 'w') as img_file:
+    #txt_file_train = 'D:/anita/Research/XAI_Oversample/CMO/imbalance_data/iNaturalist_imb_train.txt' #local PC
+    txt_file_train = '/home/tcvcs/XAI_Oversample/CMO/imbalance_data/iNaturalist_imb_train.txt' #RC account
+    with open(txt_file, 'w') as img_file:
         for i in range(len(train_images_list)):
             #write image path and label in one line: path space label
             img_file.write(train_images_list[i] + ' ' + str(train_labels_list[i]) + '\n')
-
-    with open('D:/anita/Research/XAI_Oversample/CMO/imbalance_data/iNaturalist_imb_val.txt', 'w') as img_file:
+    
+    #txt_file_val = 'D:/anita/Research/XAI_Oversample/CMO/imbalance_data/iNaturalist_imb_val.txt' #local PC
+    txt_file_val = '/home/tcvcs/XAI_Oversample/CMO/imbalance_data/iNaturalist_imb_val.txt' #RC account
+    with open(txt_file_val, 'w') as img_file:
         for i in range(len(val_images_list)):
             img_file.write(val_images_list[i] + ' ' + str(val_labels_list[i]) + '\n')
     
