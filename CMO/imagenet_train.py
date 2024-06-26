@@ -306,7 +306,7 @@ def main_worker(gpu, ngpus_per_node, args):
             per_cls_weights = torch.FloatTensor(per_cls_weights).cuda(args['gpu'])
         elif args['train_rule'] == 'DRW':
             train_sampler = None
-            idx = epoch // 80
+            idx = epoch // 160
             betas = [0, 0.9999]
             effective_num = 1.0 - np.power(betas[idx], cls_num_list)
             per_cls_weights = (1.0 - betas[idx]) / np.array(effective_num)
@@ -681,6 +681,14 @@ def validate(val_loader, model, criterion, epoch,args, log, tf_writer, flag='val
         flag, (np.array2string(cls_acc, separator=',', formatter={'float_kind': lambda x: "%.3f" % x})))
         print(output)
 
+        #calcuate Gmean, ACSA, ACC
+        gmean = np.prod(cls_acc) ** (1.0 / len(cls_acc))
+        acsa = np.mean(cls_acc)
+        acc = np.sum(cls_hit) / np.sum(cls_cnt)
+        out_gm_acsa_acc = '%s Gmean: %.3f, ACSA: %.3f, ACC: %.3f' % (flag, gmean, acsa, acc)
+        #print('Gmean: %.3f, ACSA: %.3f, ACC: %.3f' % (gmean, acsa, acc))
+        print(out_gm_acsa_acc)
+
         many_shot = train_cls_num_list > 100
         medium_shot = (train_cls_num_list <= 100) & (train_cls_num_list > 20)
         few_shot = train_cls_num_list <= 20
@@ -691,6 +699,7 @@ def validate(val_loader, model, criterion, epoch,args, log, tf_writer, flag='val
         if log is not None:
             log.write(output + '\n')
             log.write(out_cls_acc + '\n')
+            log.write(out_gm_acsa_acc + '\n')
             log.flush()
 
         tf_writer.add_scalar('loss/test_' + flag, losses.avg, epoch)
