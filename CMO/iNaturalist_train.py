@@ -35,18 +35,13 @@ import gradcam
 
 
 args = {}
-<<<<<<< HEAD
-args['root'] = 'D:/anita/Research/iNaturalist/'
 args['dataset'] = 'iNaturalist_lt' #iNaturalist, iNaturalist_lt, iNaturalist_lt_Radom
-=======
-#args['root'] = 'D:/anita/Research/iNaturalist/' #my local machine 
-args['root'] = '/home/tcvcs/image_datasets/iNaturalist/' #server
-args['dataset'] = 'iNaturalist'
->>>>>>> 85b62f7242f711db498101d33c8afc63f43166ac
+args['root'] = 'D:/anita/Research/iNaturalist/' #my local machine 
+#args['root'] = '/home/tcvcs/image_datasets/iNaturalist/' #server
 args['arch'] = 'resnet50'
 args['loss_type'] = 'BS'
 args['train_rule'] = 'DRW'
-args['imb_factor'] = 0.01 #this is not used in the LT_Dataset class. TODO: Implement a new dataset based on imb_factor
+args['imb_factor'] = 0.01  # this is not used in the LT_Dataset class. TODO: Implement a new dataset based on imb_factor
 args['rand_number'] = 0
 args['mixup_prob'] = 0.5
 args['exp_str'] = 'exp'
