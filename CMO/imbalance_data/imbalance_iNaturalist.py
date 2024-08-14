@@ -101,7 +101,7 @@ class Imb_iNat_Dataset(Dataset):
     
 
 # Load the imbalanced dataset from the given txt files
-def load_imb_inaturalist(image_dir, transform_train, transform_val, use_randaug=False):
+def load_imb_inaturalist(image_dir, transform_train, transform_val, long_tail=False, random_select=False):
     #load data from txt files
     train_images_list = []
     train_labels_list = []
@@ -112,9 +112,15 @@ def load_imb_inaturalist(image_dir, transform_train, transform_val, use_randaug=
     print("loading imbalanced iNaturalist data-------")
     print(os.getcwd())
     
-    txt_file = 'D:/anita/Research/XAI_Oversample/CMO/imbalance_data/iNaturalist_imb_train.txt'
+    if not long_tail and not random_select:
+        txt_file = 'D:/anita/Research/XAI_Oversample/CMO/imbalance_data/iNaturalist_imb_train.txt'  
+    elif long_tail and not random_select:
+        txt_file = 'D:/anita/Research/XAI_Oversample/CMO/imbalance_data/iNaturalist_lt_train.txt'  
+    else:
+        txt_file = 'D:/anita/Research/XAI_Oversample/CMO/imbalance_data/iNaturalist_lt_random_train.txt'
+        
     if not os.path.exists(txt_file):
-        train_images_list, train_labels_list, val_images_list, val_labels_list = create_imblanced_inat_txt(image_dir)
+        train_images_list, train_labels_list, val_images_list, val_labels_list = create_imblanced_inat_txt(image_dir, long_tail, random_select)
     else:
         with open(txt_file) as f:
             for line in f:
@@ -130,59 +136,149 @@ def load_imb_inaturalist(image_dir, transform_train, transform_val, use_randaug=
 
     return train_images_list, train_labels_list, val_images_list, val_labels_list
 
+def calculate_class_numbers(range):
+    start, end = range.split('-')
+    return int(end) - int(start) + 1
+
 # Create the imbalanced dataset and save the image directory to txt files
-def create_imblanced_inat_txt(image_dir):  
-    num_classes = 10
-    class_ratios = [2000, 1500, 1000, 800, 650, 500, 350, 200, 120, 60]
-    class_synset_list = ['00680-00705', '01962-01979', '03594-03607','04756-04764', '01392-01398', '01703-01707',  '04416-04419', '04819-04822', '04416-04419', '04739-04740']
+def create_imblanced_inat_txt(image_dir, long_tail, random_select=False):
+    class_synset_list = ['00680-00705', '01962-01979', '03594-03607','04756-04764', '01392-01398', '01703-01707',  '04416-04419', '04819-04822', '04416-04419', '04739-04740']  
     train_images_list = []
     train_labels_list = []
     val_images_list = []
     val_labels_list = []
-
-    # if txt file doesnt exist, create the txt file
-    for i in range(num_classes):
-        class_synset = class_synset_list[i]
-        
-        #get the matched directories within class_synset range
-        matched_dirs = []
-        for item in os.listdir(image_dir):
+    
+    class_numbers_in_each_range = [calculate_class_numbers(item) for item in class_synset_list] #[26, 18, 14, 9, 7, 5, 4, 4, 4, 2]
+    print(class_numbers_in_each_range)
+    
+    if not long_tail:
+        num_classes = 10
+        class_ratios = [2000, 1500, 1000, 800, 650, 500, 350, 200, 120, 60]
+    else:
+        num_classes = sum(class_numbers_in_each_range)  #93
+        class_ratios_ori = [120,100,80,60,40,30,20,10,5,5]   
+        class_ratios = []
+        for diff, ratio in zip(class_numbers_in_each_range, class_ratios_ori):
+            class_ratios.extend([ratio] * diff)
+            
+    if not random_select:  
+        j = 0            
+        for i in range(10):
+            class_synset = class_synset_list[i]
             start, end = class_synset.split('-')
             start, end = int(start), int(end)
-            set_num = int(item.split('_')[0])
-            if set_num >= start and set_num <= end:
-                matched_dirs.append(item)
-        # get images from the matched directories based on class_ratios       
-        all_images = []
-        for directory in matched_dirs:
-            for root, dirs, files in os.walk(os.path.join(image_dir, directory)):
-                for file in files:
-                    all_images.append(os.path.join(root, file))
-
-        num_images = class_ratios[i]
-        if num_images < len(all_images):
-            train_class_files = random.sample(all_images, num_images)          
-            val_class_files= random.sample(list(set(all_images) - set(train_class_files)), 60)       
-        else:
-            train_images_files = all_images
-            val_class_files = random.sample(all_images, 60)
+            matched_dirs = []       
+            if not long_tail: #sample the images within given range into the same image class.
+                for item in os.listdir(image_dir):
+                    set_num = int(item.split('_')[0])
+                    if set_num >= start and set_num <= end:
+                        matched_dirs.append(item)
+                        
+                all_images_in_class = []
+                for directory in matched_dirs:
+                    for root, dirs, files in os.walk(os.path.join(image_dir, directory)):
+                        for file in files:
+                            all_images_in_class.append(os.path.join(root, file))
+                        
+                sample_number = class_ratios[i]
+                
+                if sample_number < len(all_images_in_class):
+                    train_class_files = random.sample(all_images_in_class, sample_number)
+                    val_class_files = random.sample(list(set(all_images_in_class) - set(train_class_files)), 60)
+                else:
+                    train_class_files = all_images_in_class
+                    val_class_files = random.sample(all_images_in_class, 60)
+                
+                for file in train_class_files:
+                    train_images_list.append(file)
+                    train_labels_list.append(i)
+                for file in val_class_files:
+                    val_images_list.append(file)
+                    val_labels_list.append(i)
+                    
+            else: #long tail, each directory is a class, in total 93 classes instead of 10 classes.
+                #j = class_numbers_in_each_range[i]
+                for item in os.listdir(image_dir):
+                    set_num = int(item.split('_')[0])
+                    #if the set_num is within the range, this directory is a class
+                    if set_num >= start and set_num <= end:
+                        all_images_in_class = []
+                        for root, dirs, files in os.walk(os.path.join(image_dir, item)):
+                            for file in files:
+                                all_images_in_class.append(os.path.join(root, file))
+                                
+                        sample_number = class_ratios[j]
+                        
+                        if sample_number < len(all_images_in_class):
+                            train_class_files = random.sample(all_images_in_class, sample_number)
+                            remain = list(set(all_images_in_class) - set(train_class_files))
+                            if len(remain)>=60:
+                                val_class_files = random.sample(remain, 60)
+                            else:
+                                val_class_files = random.sample(all_images_in_class, 60)
+                        else:
+                            train_class_files = all_images_in_class
+                            val_class_files = random.sample(all_images_in_class, 60)
+                        
+                        for file in train_class_files:
+                            train_images_list.append(file)
+                            train_labels_list.append(j)
+                        for file in val_class_files:
+                            val_images_list.append(file)
+                            val_labels_list.append(j)   
+                        j = j + 1
+    
+    else: #TODO: randomly select images from the whole dataset to create 91 classes dataset: random_lt_iNaturalist  
+        if not long_tail:
+            print('Random selection is only for long tail dataset')
+            return  #exit
         
-        for file in train_class_files:
-            train_images_list.append(file)
-            train_labels_list.append(i)
-        for file in val_class_files:
-            val_images_list.append(file)
-            val_labels_list.append(i)
-
-    
+        total_classes = 93 
+        #randomly select 91 directory from image_dir
+        all_dirs = os.listdir(image_dir)
+        selected_dirs = random.sample(all_dirs, total_classes)
+        for i in range(total_classes):
+            all_images_in_class = []
+            for root, dirs, files in os.walk(os.path.join(image_dir, selected_dirs[i])):
+                for file in files:
+                    all_images_in_class.append(os.path.join(root, file))
+                    
+            sample_number = class_ratios[i]
+            if sample_number < len(all_images_in_class):
+                train_class_files = random.sample(all_images_in_class, sample_number)
+                remain = list(set(all_images_in_class) - set(train_class_files))
+                if len(remain)>=60:
+                    val_class_files = random.sample(remain, 60)
+                else:
+                    val_class_files = random.sample(all_images_in_class, 60)
+            else:
+                train_class_files = all_images_in_class
+                val_class_files = random.sample(all_images_in_class, 60)
+            
+            for file in train_class_files:
+                train_images_list.append(file)
+                train_labels_list.append(i)
+            for file in val_class_files:
+                val_images_list.append(file)
+                val_labels_list.append(i)
+            
     # Save the imbalanced dataset to text files
-    
-    with open('D:/anita/Research/XAI_Oversample/CMO/imbalance_data/iNaturalist_imb_train.txt', 'w') as img_file:
+    if not long_tail and not random_select:
+        train_file_name = 'D:/anita/Research/XAI_Oversample/CMO/imbalance_data/iNaturalist_imb_train.txt'
+        val_file_name = 'D:/anita/Research/XAI_Oversample/CMO/imbalance_data/iNaturalist_imb_val.txt'
+    elif long_tail and not random_select:
+        train_file_name = 'D:/anita/Research/XAI_Oversample/CMO/imbalance_data/iNaturalist_lt_train.txt'
+        val_file_name = 'D:/anita/Research/XAI_Oversample/CMO/imbalance_data/iNaturalist_lt_val.txt'
+    else:
+        train_file_name = 'D:/anita/Research/XAI_Oversample/CMO/imbalance_data/iNaturalist_lt_random_train.txt'
+        val_file_name = 'D:/anita/Research/XAI_Oversample/CMO/imbalance_data/iNaturalist_lt_random_val.txt'
+        
+    with open(train_file_name, 'w') as img_file:
         for i in range(len(train_images_list)):
             #write image path and label in one line: path space label
             img_file.write(train_images_list[i] + ' ' + str(train_labels_list[i]) + '\n')
 
-    with open('D:/anita/Research/XAI_Oversample/CMO/imbalance_data/iNaturalist_imb_val.txt', 'w') as img_file:
+    with open(val_file_name, 'w') as img_file:
         for i in range(len(val_images_list)):
             img_file.write(val_images_list[i] + ' ' + str(val_labels_list[i]) + '\n')
     
@@ -204,5 +300,5 @@ transform_val = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
-train_dataset, val_dataset = load_imb_inaturalist(img_dir, transform_train, transform_val)
+train_images_list, train_labels_list, val_images_list, val_labels_list = load_imb_inaturalist(img_dir, transform_train, transform_val, True, True)
 '''

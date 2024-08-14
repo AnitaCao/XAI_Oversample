@@ -36,7 +36,7 @@ import gradcam
 
 args = {}
 args['root'] = 'D:/anita/Research/iNaturalist/'
-args['dataset'] = 'iNaturalist'
+args['dataset'] = 'iNaturalist_lt' #iNaturalist, iNaturalist_lt, iNaturalist_lt_Radom
 args['arch'] = 'resnet50'
 args['loss_type'] = 'BS'
 args['train_rule'] = 'DRW'
@@ -61,7 +61,7 @@ args['use_randaug'] = False
 args['beta'] = 1
 args['data_aug'] = 'CMO' # 'CMO' or 'CMO_XAI' or 'CMO_XAI_MASK'
 args['weighted_alpha'] = 0.5
-args['num_classes'] = 10 #1000
+args['num_classes'] = 93 #93
 args['root_log'] = './logs'
 args['root_model'] = './checkpoint'
 args['store_name'] = '_'.join([args['dataset'], args['arch'], args['loss_type'], args['train_rule'], args['data_aug'], str(args['imb_factor']), str(args['rand_number']), str(args['mixup_prob']), args['exp_str']])
@@ -117,10 +117,11 @@ def main_worker(gpu, ngpus_per_node, args):
     # create model
     print("=> creating model '{}'".format(args["arch"]))
     num_classes = args['num_classes']
-    model = getattr(models, args["arch"])(pretrained=False)
-    if args['num_classes'] == 10:
-        num_ftrs = model.fc.in_features
-        model.fc = nn.Linear(num_ftrs, num_classes)
+    model = getattr(models, args["arch"])(pretrained=True) #use pretrained model for smaller dataset.
+    #if args['num_classes'] == 10:
+    
+    num_ftrs = model.fc.in_features
+    model.fc = nn.Linear(num_ftrs, num_classes)
 
     XAI_model = models.resnet50(pretrained=True) # load a pretrained model for XAI heatmap generation
     XAI_model = XAI_model.eval()
@@ -217,7 +218,7 @@ def main_worker(gpu, ngpus_per_node, args):
     data_path = os.path.join(args['root'], 'train')
     #train_dataset = Imb_Dataset(data_path, transform_train, use_randaug=args['use_randaug'], datatype='train')
     #val_dataset = Imb_Dataset(data_path, transform_val, use_randaug=args['use_randaug'], datatype='val')
-    train_images_list, train_labels_list, val_images_list, val_labels_list = load_imb_inaturalist(data_path, transform_train, transform_val)
+    train_images_list, train_labels_list, val_images_list, val_labels_list = load_imb_inaturalist(data_path, transform_train, transform_val, long_tail=True, random_select=False)
     
     train_dataset = Imb_iNat_Dataset(data_path,train_images_list, train_labels_list,transform_train)
     val_dataset = Imb_iNat_Dataset(data_path,val_images_list, val_labels_list,transform_val)
@@ -377,9 +378,8 @@ def train(train_loader, model, gc, criterion, optimizer, epoch, args, log,
 
         # measure data loading time
         data_time.update(time.time() - end)
-
-        input = input.cuda(args['gpu'], non_blocking=True)
-        target = target.cuda(args['gpu'], non_blocking=True)
+        input = input.cuda(args['gpu'], non_blocking=True) #16, 3, 224, 224
+        target = target.cuda(args['gpu'], non_blocking=True) #16
         # Data augmentation
         r = np.random.rand(1)
 
@@ -432,8 +432,8 @@ def train(train_loader, model, gc, criterion, optimizer, epoch, args, log,
             output = model(input)
             loss = criterion(output, target) * torch.tensor(lam_list).cuda(args['gpu']) + criterion(output, target2) * (1. - torch.tensor(lam_list).cuda(args['gpu']))
             loss = loss.mean()
-            print("Just for testing purposes: CMO+XAI mixup images: ")
-            testing_plot(input_ori, input2, input)
+            #print("Just for testing purposes: CMO+XAI mixup images: ")
+            #testing_plot(input_ori, input2, input)
         
         #Use mask to blend input1 and input2 instead of using bouding box.    
         elif args['data_aug'] == 'CMO_XAI_MASK' and args['start_data_aug'] < epoch < (
