@@ -118,7 +118,7 @@ def load_imb_inaturalist(image_dir, transform_train, transform_val, long_tail=Fa
         txt_file = 'D:/anita/Research/XAI_Oversample/CMO/imbalance_data/iNaturalist_lt_train.txt'  
     else:
         txt_file = 'D:/anita/Research/XAI_Oversample/CMO/imbalance_data/iNaturalist_lt_random_train.txt'
-        
+    #txt_file = '/home/tcvcs/XAI_Oversample/CMO/imbalance_data/iNaturalist_imb_train.txt'    
     if not os.path.exists(txt_file):
         train_images_list, train_labels_list, val_images_list, val_labels_list = create_imblanced_inat_txt(image_dir, long_tail, random_select)
     else:

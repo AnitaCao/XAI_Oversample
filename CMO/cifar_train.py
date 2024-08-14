@@ -416,6 +416,36 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log,
             loss = loss.mean()
             #print("just for testing purposes: CMO+XAI mixup images: ")
             #testing_plot(input_ori, input2, input)
+
+        elif args['data_aug'] == 'CMO_XAI_MASK' and args['start_data_aug'] < epoch < (
+            args['epochs'] - args['end_data_aug']) and r < args["mixup_prob"]:
+                        # generate mixed sample
+            lam = np.random.beta(args["beta"], args["beta"])
+            print("---Calling XAI_MASK. Batch number: ", i)
+            start = time.time()
+            saliencys, _ = gradcam(input2, None) 
+            
+            #saliency_visualisation(input2, saliencys)
+            
+            time1 = time.time()
+            print('Total time to generate saliencys is: {:.2f} second'.format((time1-start))) 
+
+            MASK_list, lam_list = XAI_MASK(saliencys, lam) # TODO: lam should be used as the threshold for the ROI, current threshold is 0.5
+            
+            # Convert refined_binary_masks to a torch tensor if it isn't already
+            MASK_list = torch.tensor(MASK_list, dtype=torch.float32).cuda(args['gpu'])
+
+            #repace input's area with input2's area based on bounding box
+            input_ori = input.clone() # save the original input for display purposes
+
+            # Use the mask to blend input1 and input2
+            input = MASK_list * input2 + (1 - MASK_list) * input
+            output = model(input)
+            loss = criterion(output, target) * torch.tensor(lam_list).cuda(args['gpu']) + criterion(output, target2) * (1. - torch.tensor(lam_list).cuda(args['gpu']))
+            loss = loss.mean()
+            #print("Just for testing purposes: CMO+XAI mixup images: ")
+            #testing_plot(input_ori, input2, input)
+            
         else:
             output = model(input) #output.size() = [128, 10], 128 is batch size, 10 is number of classes
             loss = criterion(output, target)
@@ -453,6 +483,24 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log,
     tf_writer.add_scalar('acc/train_top5', top5.avg, epoch)
     tf_writer.add_scalar('lr', optimizer.param_groups[-1]['lr'], epoch)
 
+def XAI_MASK(saliencys, lam):
+    # saliency is a batch of saliency maps. For example: 32 by 1 by 224 by 224   
+    #TODO: threshold should be related to lam.
+    threshold = 0.5
+    binary_masks = (saliencys > threshold).astype(np.uint8)
+    #binary_masks = np.squeeze(binary_masks, axis=1)
+    
+    refined_binary_masks = np.array([refine_mask(mask[0]) for mask in binary_masks])   
+    # Calculate the share of the ROI for each mask in the batch
+    roi_shares = np.mean(refined_binary_masks, axis=(1, 2))
+
+    return binary_masks,roi_shares
+
+def refine_mask(mask):
+    kernel = np.ones((3, 3), np.uint8)
+    refined_mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    refined_mask = cv2.morphologyEx(refined_mask, cv2.MORPH_OPEN, kernel)
+    return refined_mask
 
 def XAI_box(saliencys, lam):
 
@@ -550,6 +598,7 @@ def validate(val_loader, model, criterion, epoch, args, log=None, tf_writer=None
                     i, len(val_loader), batch_time=batch_time, loss=losses,
                     top1=top1, top5=top5))
                 print(output)
+
         cf = confusion_matrix(all_targets, all_preds).astype(float)
         cls_cnt = cf.sum(axis=1)
         cls_hit = np.diag(cf)
@@ -560,6 +609,14 @@ def validate(val_loader, model, criterion, epoch, args, log=None, tf_writer=None
         flag, (np.array2string(cls_acc, separator=',', formatter={'float_kind': lambda x: "%.3f" % x})))
         print(output)
         # print(out_cls_acc)
+
+        #calcuate Gmean, ACSA, ACC
+        gmean = np.prod(cls_acc) ** (1.0 / len(cls_acc))
+        acsa = np.mean(cls_acc)
+        acc = np.sum(cls_hit) / np.sum(cls_cnt)
+        out_gm_acsa_acc = '%s Gmean: %.3f, ACSA: %.3f, ACC: %.3f' % (flag, gmean, acsa, acc)
+        #print('Gmean: %.3f, ACSA: %.3f, ACC: %.3f' % (gmean, acsa, acc))
+        print(out_gm_acsa_acc)
 
         if args["imb_factor"] == 0.01:
             many_shot = train_cls_num_list > 100
@@ -572,6 +629,7 @@ def validate(val_loader, model, criterion, epoch, args, log=None, tf_writer=None
         if log is not None:
             log.write(output + '\n')
             log.write(out_cls_acc + '\n')
+            log.write(out_gm_acsa_acc + '\n')
             log.flush()
 
         tf_writer.add_scalar('loss/test_' + flag, losses.avg, epoch)

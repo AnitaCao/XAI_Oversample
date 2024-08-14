@@ -35,8 +35,14 @@ import gradcam
 
 
 args = {}
+<<<<<<< HEAD
 args['root'] = 'D:/anita/Research/iNaturalist/'
 args['dataset'] = 'iNaturalist_lt' #iNaturalist, iNaturalist_lt, iNaturalist_lt_Radom
+=======
+#args['root'] = 'D:/anita/Research/iNaturalist/' #my local machine 
+args['root'] = '/home/tcvcs/image_datasets/iNaturalist/' #server
+args['dataset'] = 'iNaturalist'
+>>>>>>> 85b62f7242f711db498101d33c8afc63f43166ac
 args['arch'] = 'resnet50'
 args['loss_type'] = 'BS'
 args['train_rule'] = 'DRW'
@@ -673,7 +679,9 @@ def validate(val_loader, model, criterion, epoch,args, log, tf_writer, flag='val
         gmean = np.prod(cls_acc) ** (1.0 / len(cls_acc))
         acsa = np.mean(cls_acc)
         acc = np.sum(cls_hit) / np.sum(cls_cnt)
-        print('Gmean: %.3f, ACSA: %.3f, ACC: %.3f' % (gmean, acsa, acc))
+        out_gm_acsa_acc = '%s Gmean: %.3f, ACSA: %.3f, ACC: %.3f' % (flag, gmean, acsa, acc)
+        #print('Gmean: %.3f, ACSA: %.3f, ACC: %.3f' % (gmean, acsa, acc))
+        print(out_gm_acsa_acc)
         
         
         
@@ -697,6 +705,7 @@ def validate(val_loader, model, criterion, epoch,args, log, tf_writer, flag='val
         if log is not None:
             log.write(output + '\n')
             log.write(out_cls_acc + '\n')
+            log.write(out_gm_acsa_acc + '\n')
             log.flush()
 
         tf_writer.add_scalar('loss/test_' + flag, losses.avg, epoch)
