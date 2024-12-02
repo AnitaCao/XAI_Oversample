@@ -107,17 +107,19 @@ def load_imb_inaturalist(image_dir, transform_train, transform_val, long_tail=Fa
     train_labels_list = []
     val_images_list = []
     val_labels_list = []
+    
     # if txt file doesnt exist in current directory, create the txt file
-    #print current path
     print("loading imbalanced iNaturalist data-------")
-    print(os.getcwd())
+
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    print(current_dir)
     
     if not long_tail and not random_select:
-        txt_file = 'D:/anita/Research/XAI_Oversample/CMO/imbalance_data/iNaturalist_imb_train.txt'  
+        txt_file = os.path.join(current_dir, 'iNaturalist_imb_train.txt')  
     elif long_tail and not random_select:
-        txt_file = 'D:/anita/Research/XAI_Oversample/CMO/imbalance_data/iNaturalist_lt_train.txt'  
+        txt_file = os.path.join(current_dir, 'iNaturalist_lt_train.txt')
     else:
-        txt_file = 'D:/anita/Research/XAI_Oversample/CMO/imbalance_data/iNaturalist_lt_random_train.txt'
+        txt_file = os.path.join(current_dir, 'iNaturalist_lt_random_train.txt')
     #txt_file = '/home/tcvcs/XAI_Oversample/CMO/imbalance_data/iNaturalist_imb_train.txt'    
     if not os.path.exists(txt_file):
         train_images_list, train_labels_list, val_images_list, val_labels_list = create_imblanced_inat_txt(image_dir, long_tail, random_select)

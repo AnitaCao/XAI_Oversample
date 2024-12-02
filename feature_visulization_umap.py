@@ -1,14 +1,11 @@
-import torch
-import torch.nn as nn
-from torchvision import models, transforms
-from torch.utils.data import DataLoader
-from torchvision.datasets import ImageFolder
-import numpy as np
+import umap
 import matplotlib.pyplot as plt
-from sklearn.manifold import TSNE
-from scipy.spatial.distance import pdist, squareform
-import seaborn as sns
+import numpy as np
+from sklearn.preprocessing import StandardScaler
 from CMO.imbalance_data.imbalance_iNaturalist import load_imb_inaturalist, Imb_iNat_Dataset
+from torchvision import models, transforms
+import torch
+from torch.utils.data import DataLoader
 
 # Load the pretrained ResNet-50 model
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -50,38 +47,27 @@ handle.remove()
 features = np.concatenate(features, axis=0)
 labels = np.array(labels)
 
-'''
-# Compute pairwise distances
-distances = pdist(features, metric='euclidean')
-distance_matrix = squareform(distances)
+reducer = umap.UMAP(n_components=2, random_state=42)
+reduced_features = reducer.fit_transform(features)
 
-# Visualize pairwise distances using a heatmap
-plt.figure(figsize=(12, 10))
-sns.heatmap(distance_matrix, cmap='viridis')
-plt.title('Pairwise Distance Matrix of Features')
-plt.show()
-'''
-
-
-# Reduce dimensionality using t-SNE
-tsne = TSNE(n_components=2, random_state=42, perplexity=10)
-reduced_features = tsne.fit_transform(features)
-
-class_labels = np.unique(labels)
-
-# Plot the reduced features
 plt.figure(figsize=(10, 8))
 scatter = plt.scatter(reduced_features[:, 0], reduced_features[:, 1], c=labels, cmap='viridis', alpha=0.7)
 plt.colorbar(scatter)
-plt.title('t-SNE of ResNet-50 Features')
+plt.title('UMAP of ResNet-50 Features')
+plt.show()
 
-# Annotate each class
+class_labels = np.unique(labels)
+plt.figure(figsize=(10, 8))
+scatter = plt.scatter(reduced_features[:, 0], reduced_features[:, 1], c=labels, cmap='viridis', alpha=0.7)
+plt.colorbar(scatter)
+plt.title('UMAP of ResNet-50 Features')
+
 class_centroids = []
 
 for label in class_labels:
     class_points = reduced_features[labels == label]
     centroid = class_points.mean(axis=0)
     class_centroids.append(centroid)
-    plt.annotate(label, (centroid[0], centroid[1]), fontsize=10, ha='center', backgroundcolor='white')
+    plt.annotate(label, (centroid[0], centroid[1]), fontsize=8, ha='center')
 
 plt.show()

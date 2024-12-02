@@ -19,6 +19,7 @@ RC_scripts/
 *.yml
 *.txt
 CMO/imbalance_data/*.txt
+*.png
 
 # files only in RC account for testing purposes. Remove before submit.
 CMO/cifar_train_cmo_10.py
