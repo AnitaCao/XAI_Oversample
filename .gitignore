@@ -34,3 +34,7 @@ CMO/cifar_huggingface_train_cmo_10.py
 CMO/cifar_huggingface_train_cmo_xai_mask_10.py
 CMO/iNaturalist_train_cmo_10.py
 CMO/iNaturalist_train_cmo_xai_mask_10.py
+CMO/iNaturalist_lt_random_train_cmo_93.py
+CMO/iNaturalist_lt_random_train_cmo_mask_93.py
+CMO/iNaturalist_lt_train_cmo_93.py
+CMO/iNaturalist_lt_train_cmo_mask_93.py
