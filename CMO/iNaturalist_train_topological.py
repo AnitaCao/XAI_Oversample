@@ -24,7 +24,7 @@ from util.util import *
 from util.randaugment import rand_augment_transform
 import util.moco_loader as moco_loader
 import matplotlib
-matplotlib.use('TkAgg')
+#matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 import cv2
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -37,8 +37,8 @@ import feature_visualization_and_distance as fvd
 
 args = {}
 args['dataset'] = 'iNaturalist_lt' #iNaturalist, iNaturalist_lt, iNaturalist_lt_Radom
-args['root'] = 'D:/anita/Research/iNaturalist/' #my local machine 
-#args['root'] = '/home/tcvcs/image_datasets/iNaturalist/' #server
+#args['root'] = 'D:/anita/Research/iNaturalist/' #my local machine 
+args['root'] = '/home/tcvcs/image_datasets/iNaturalist/' #server
 args['arch'] = 'resnet50'
 args['loss_type'] = 'BS'
 args['train_rule'] = 'DRW'
@@ -57,7 +57,7 @@ args['lr'] = 0.1
 args['momentum'] = 0.9
 args['weight_decay'] = 5e-4
 args['epochs'] = 200
-args['start_data_aug'] = -1 # start data augmentation after 25th epoch
+args['start_data_aug'] = 25 # start data augmentation after 25th epoch
 args['end_data_aug'] = 25 # do not use data augmentation for the last 25 epoches
 args['use_randaug'] = False
 args['beta'] = 1
@@ -65,6 +65,8 @@ args['data_aug'] = 'CMO_XAI_MASK' # 'CMO' or 'CMO_XAI' or 'CMO_XAI_MASK'
 args['sample_method'] = 'topological' #'topological' or 'freqeuncy' #by defaut, it is frequency
 args['weighted_alpha'] = 0.5
 args['num_classes'] = 10 #93
+args["long_tail"] = False #10 classese for imb or 93 classes for long tail
+args["random_select"] = False
 args['root_log'] = './logs'
 args['root_model'] = './checkpoint'
 args['store_name'] = '_'.join([args['dataset'], args['arch'], args['loss_type'], args['train_rule'], args['data_aug'], str(args['imb_factor']), str(args['rand_number']), str(args['mixup_prob']), args['exp_str']])
@@ -220,7 +222,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
     data_path = os.path.join(args['root'], 'train')
 
-    train_images_list, train_labels_list, val_images_list, val_labels_list = load_imb_inaturalist(data_path, transform_train, transform_val, long_tail=False, random_select=False)
+    train_images_list, train_labels_list, val_images_list, val_labels_list = load_imb_inaturalist(data_path, transform_train, transform_val, long_tail=args["long_tail"], random_select=args["random_select"])
     
     train_dataset = Imb_iNat_Dataset(data_path,train_images_list, train_labels_list,transform_train)
     val_dataset = Imb_iNat_Dataset(data_path,val_images_list, val_labels_list,transform_val)
@@ -375,11 +377,11 @@ def train(train_loader, model, gc, criterion, optimizer, epoch, args, log,
                 
                 distance_matrix, class_labels = fvd.get_distance_matrix(train_loader)
                 
-                fvd.visualize_distance_matrix(distance_matrix, class_labels)
+                #fvd.visualize_distance_matrix(distance_matrix, class_labels)
 
                 probability_matrix = fvd.get_probability_matrix(distance_matrix)
                 
-                fvd.visualize_probability_matrix(probability_matrix)
+                #fvd.visualize_probability_matrix(probability_matrix)
                 
                 input2, target2 = fvd.get_next_batch(input, target, train_loader, probability_matrix)                  
             else: 
