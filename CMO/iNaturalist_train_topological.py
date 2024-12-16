@@ -453,19 +453,41 @@ def train(train_loader, model, gc, criterion, optimizer, epoch, args, log,
             time1 = time.time()
             print('Total time to generate saliencys is: {:.2f} second'.format((time1-start))) 
 
-            bounding_list = XAI_box(saliencys, lam) # TODO: lam should be used as the threshold for the ROI, current threshold is 0.5
-            #print("Bounding box list: ", bounding_list)
+            bboxes = XAI_box(saliencys, lam) # TODO: lam should be used as the threshold for the ROI, current threshold is 0.5
+            #print("Bounding box list: ", bboxes)
             
-
             #repace input's area with input2's area based on bounding box
             input_ori = input.clone() # save the original input for display purposes
-            masks = torch.zeros_like(input)  # Create a zero mask for all images
+            
             lam_list = []
-            for j in range(len(bounding_list)):
-                bbx1, bby1, bbx2, bby2 = bounding_list[j]
-                masks[j, :, bby1:bby2, bbx1:bbx2] = 1  # Set mask to 1 within the bounding box
-                lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (input.size()[-1] * input.size()[-2]))
-                lam_list.append(lam)
+
+            if args['data_aug'] == True:
+                #duplicate input2 to make it 4 times for data augmentation
+                input2 = input2.repeat_interleave(4, 0)
+                masks = torch.zeros_like(input2)
+
+                for j in range(len(bboxes)):
+                    roi = crop_roi(input[j], bboxes[j])
+                    augmented_rois = augment_roi(roi) #each roi is augmented 4 times
+                    #put augemented_rois to masks at random position    
+                    for k in range(4):
+                        batch_index = j * 4 + k
+                        h, w, _ = augmented_rois[k].shape
+                        x = random.randint(0, input.size()[-1] - w)
+                        y = random.randint(0, input.size()[-2] - h)
+                        masks[batch_index, :, y:y+h, x:x+w] = augmented_rois[k]
+                        lam = 1 - ((w) * (h) / (input.size()[-1] * input.size()[-2]))
+                        lam_list.append(lam)
+
+                input = input.repeat_interleave(4, 0)
+                target = target.repeat_interleave(4, 0)
+            else: 
+                masks = torch.zeros_like(input)  # Create a zero mask for all images
+                for j in range(len(bboxes)):
+                    bbx1, bby1, bbx2, bby2 = bboxes[j]
+                    masks[j, :, bby1:bby2, bbx1:bbx2] = 1  # Set mask to 1 within the bounding box
+                    lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (input.size()[-1] * input.size()[-2]))
+                    lam_list.append(lam)
 
             # Use the mask to blend input1 and input2
             input = masks * input2 + (1 - masks) * input
@@ -489,16 +511,16 @@ def train(train_loader, model, gc, criterion, optimizer, epoch, args, log,
             time1 = time.time()
             print('Total time to generate saliencys is: {:.2f} second'.format((time1-start))) 
 
-            MASK_list, lam_list = XAI_MASK(saliencys, lam) # TODO: lam should be used as the threshold for the ROI, current threshold is 0.5
+            masks, lam_list = XAI_MASK(saliencys, lam) # TODO: lam should be used as the threshold for the ROI, current threshold is 0.5
             
             # Convert refined_binary_masks to a torch tensor if it isn't already
-            MASK_list = torch.tensor(MASK_list, dtype=torch.float32).cuda(args['gpu'])
+            masks = torch.tensor(masks, dtype=torch.float32).cuda(args['gpu'])
 
             #repace input's area with input2's area based on bounding box
             input_ori = input.clone() # save the original input for display purposes
 
             # Use the mask to blend input1 and input2
-            input = MASK_list * input2 + (1 - MASK_list) * input
+            input = masks * input2 + (1 - masks) * input
             output = model(input)
             loss = criterion(output, target) * torch.tensor(lam_list).cuda(args['gpu']) + criterion(output, target2) * (1. - torch.tensor(lam_list).cuda(args['gpu']))
             loss = loss.mean()
@@ -590,7 +612,9 @@ def getCountour(threshold, saliency):
      #add bouding box around ROI 
     saliency = saliency.squeeze(0)
 
-    _, binary_saliency = cv2.threshold(saliency, threshold, 255, cv2.THRESH_BINARY) # Convert the saliency map to binary
+    #_, binary_saliency = cv2.threshold(saliency, threshold, 255, cv2.THRESH_BINARY) # Convert the saliency map to binary
+    binary_saliency = cv2.adaptiveThreshold(np.uint8(saliency), 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 11, 2
+)
     # Convert binary_saliency to 8-bit image
     binary_saliency = np.uint8(binary_saliency)
 
@@ -598,10 +622,9 @@ def getCountour(threshold, saliency):
     contours, _ = cv2.findContours(binary_saliency, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
     if len(contours) == 0:
-        print("!!!No contour found!!!")
-        print(saliency)
-        print(binary_saliency)
-        return 0, 0, 0, 0
+        print("No contour found. Returning a small default box.")
+        h, w = saliency.shape
+        return w // 4, h // 4, w // 2, h // 2  # Centered box
     
     largest_contour = max(contours, key=cv2.contourArea)
     # Compute the bounding box of the largest contour
@@ -628,6 +651,87 @@ def getCountourList(threshold, saliencys):
     #create a list of bounding box coordinates, for each image in the batch, shape 32 by 4
     bboxes = np.array([bbx1_list, bby1_list, bbx2_list, bby2_list]).T
     return bboxes
+
+def crop_roi(image, bounding_box):
+    bbx1, bby1, bbx2, bby2 = bounding_box
+    return image[:, :, bbx1:bbx2, bby1:bby2]
+
+def augment_roi(roi):
+    augmented_rois = []
+    #original
+    augmented_rois.append(roi)
+    #scaling
+    scaled_roi = cv2.resize(roi, None, fx=1.2, fy=1.2, interpolation=cv2.INTER_LINEAR)
+    augmented_rois.append(scaled_roi)
+    #rotation
+    h,w, _ = roi.shape
+    center = (w // 2, h // 2)
+    rotation_matrix = cv2.getRotationMatrix2D(center, angle = 45, scale = 1.0)
+    rotated_roi = cv2.warpAffine(roi, rotation_matrix, (w, h))  
+    augmented_rois.append(rotated_roi)
+    #Horizontal flipping
+    flipped_roi = cv2.flip(roi, 1)
+    augmented_rois.append(flipped_roi)
+    return augmented_rois
+
+
+def patch_roi_to_background(background, roi):
+    """
+    Patch the augmented ROI onto a new background for CutMix.
+
+    Args:
+        background (np.ndarray): Background image, shape (H, W, C).
+        roi (np.ndarray): Augmented ROI, shape (H_roi, W_roi, C).
+
+    Returns:
+        cutmix_image (np.ndarray): Image with the ROI patched onto the background.
+    """
+    h_bg, w_bg, _ = background.shape
+    h_roi, w_roi, _ = roi.shape
+
+    # Ensure ROI fits within the background
+    if h_roi > h_bg or w_roi > w_bg:
+        scale_factor = min(h_bg / h_roi, w_bg / w_roi)
+        roi = cv2.resize(roi, (int(w_roi * scale_factor), int(h_roi * scale_factor)))
+        h_roi, w_roi, _ = roi.shape
+
+    # Randomly select position on the background
+    y_offset = np.random.randint(0, h_bg - h_roi)
+    x_offset = np.random.randint(0, w_bg - w_roi)
+
+    # Overlay the ROI onto the background
+    cutmix_image = background.copy()
+    cutmix_image[y_offset:y_offset + h_roi, x_offset:x_offset + w_roi] = roi
+
+    return cutmix_image
+
+def process_cutmix_batch(images, bboxes, backgrounds):
+    """
+    Perform CutMix by patching ROIs onto new backgrounds.
+
+    Args:
+        images (np.ndarray): Batch of input images, shape (batch_size, H, W, C).
+        bboxes (np.ndarray): Bounding boxes for each image, shape (batch_size, 4).
+        backgrounds (np.ndarray): Batch of background images, shape (batch_size, H, W, C).
+
+    Returns:
+        cutmix_images (list): List of CutMix images.
+    """
+    cutmix_images = []
+
+    for image, bbox, background in zip(images, bboxes, backgrounds):
+        # Step 1: Crop ROI
+        roi = crop_roi(image, bbox)
+
+        # Step 2: Apply Augmentation
+        augmented_roi = augment_roi(roi)
+
+        # Step 3: Patch ROI onto Background
+        cutmix_image = patch_roi_to_background(background, augmented_roi)
+
+        cutmix_images.append(cutmix_image)
+
+    return np.stack(cutmix_images)
 
 
 def rand_bbox(size, lam):
