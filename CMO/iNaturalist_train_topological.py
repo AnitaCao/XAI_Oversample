@@ -57,17 +57,17 @@ args['lr'] = 0.1
 args['momentum'] = 0.9
 args['weight_decay'] = 5e-4
 args['epochs'] = 200
-args['start_data_aug'] = 25 # start data augmentation after 25th epoch
-args['end_data_aug'] = 25 # do not use data augmentation for the last 25 epoches
+args['start_cut_mix'] = 25 # start data augmentation after 25th epoch
+args['end_cut_mix'] = 25 # do not use data augmentation for the last 25 epoches
 args['use_randaug'] = False
 args['beta'] = 1
 args['weighted_alpha'] = 0.5
-args['num_classes'] = 10 #93
-args["long_tail"] = False #10 classese for imb or 93 classes for long tail
+args['num_classes'] = 93
+args["long_tail"] = True #10 classese for imb or 93 classes for long tail
 args["random_select"] = False
 args['root_log'] = './logs'
 args['root_model'] = './checkpoint'
-args['store_name'] = '_'.join([args['dataset'], args['arch'], args['loss_type'], args['train_rule'], args['cut_mix'], str(args['imb_factor']), str(args['rand_number']), str(args['mixup_prob']), args['exp_str']])
+
 args["cls_num_list"] = []
 
 ''' args['cut_mix']: CMO, CMO_XAI, CMO_XAI_MASK, TODO: CMO_OBJ_DET
@@ -84,8 +84,8 @@ frequency is the original data selection method based on the frequency of the cl
 args['cut_mix'] = 'CMO_XAI_MASK' # 'CMO' or 'CMO_XAI' or 'CMO_XAI_MASK' or 'CMO_OBJ_DET'
 args['sample_method'] = 'topological' #'topological' or 'freqeuncy' #by defaut, it is frequency
 
-args['data_aug'] = True # augment the selected region of the foreground before mixing with the background
-
+args['data_aug'] = False # augment the selected region of the foreground before mixing with the background
+args['store_name'] = '_'.join([args['dataset'], args['arch'], args['loss_type'], args['train_rule'], args['cut_mix'], str(args['imb_factor']), str(args['rand_number']), str(args['mixup_prob']), args['exp_str']])
 
 best_acc1 = 0
 
@@ -382,8 +382,8 @@ def train(train_loader, model, gc, criterion, optimizer, epoch, args, log,
         weighted_train_loader = iter(weighted_train_loader)
 
     for i, (input, target) in enumerate(train_loader):
-        if args['cut_mix'].startswith('CMO') and args['start_data_aug'] < epoch < (
-                args['epochs'] - args['end_data_aug']):
+        if args['cut_mix'].startswith('CMO') and args['start_cut_mix']< epoch < (
+                args['epochs'] - args['end_cut_mix']):
             print("Using topological data selection")
             time1 = time.time()
         
@@ -423,8 +423,8 @@ def train(train_loader, model, gc, criterion, optimizer, epoch, args, log,
         # Data augmentation
         r = np.random.rand(1)
 
-        if args['cut_mix'] == 'CMO' and args['start_data_aug'] < epoch < (
-                args['epochs'] - args['end_data_aug']) and r < args["mixup_prob"]:
+        if args['cut_mix'] == 'CMO' and args['start_cut_mix']< epoch < (
+                args['epochs'] - args['end_cut_mix']) and r < args["mixup_prob"]:
             # generate mixed sample
             lam = np.random.beta(args["beta"], args["beta"])
 
@@ -440,8 +440,8 @@ def train(train_loader, model, gc, criterion, optimizer, epoch, args, log,
             #print("just for testing purposes: CMO random mixup images: ")
             #testing_plot(input_ori, input2, input)
 
-        elif args['cut_mix'] == 'CMO_XAI' and args['start_data_aug'] < epoch < (
-                args['epochs'] - args['end_data_aug']) and r < args["mixup_prob"]:
+        elif args['cut_mix'] == 'CMO_XAI' and args['start_cut_mix']< epoch < (
+                args['epochs'] - args['end_cut_mix']) and r < args["mixup_prob"]:
             # generate mixed sample
             lam = np.random.beta(args["beta"], args["beta"])
             print("---Calling XAI_Box. Batch number: ", i)
@@ -498,8 +498,8 @@ def train(train_loader, model, gc, criterion, optimizer, epoch, args, log,
             #testing_plot(input_ori, input2, input)
         
         #Use mask to blend input1 and input2 instead of using bouding box.    
-        elif args['cut_mix'] == 'CMO_XAI_MASK' and args['start_data_aug'] < epoch < (
-            args['epochs'] - args['end_data_aug']) and r < args["mixup_prob"]:
+        elif args['cut_mix'] == 'CMO_XAI_MASK' and args['start_cut_mix']< epoch < (
+            args['epochs'] - args['end_cut_mix']) and r < args["mixup_prob"]:
                         # generate mixed sample
             lam = np.random.beta(args["beta"], args["beta"])
             print("---Calling XAI_MASK. Batch number: ", i)
@@ -526,8 +526,8 @@ def train(train_loader, model, gc, criterion, optimizer, epoch, args, log,
             loss = loss.mean()
             #print("Just for testing purposes: CMO+XAI mixup images: ")
             #testing_plot(input_ori, input2, input)  
-        elif args['cut_mix'] == 'CMO_OBJ_DET' and args['start_data_aug'] < epoch < (
-                args['epochs'] - args['end_data_aug']) and r < args["mixup_prob"]:
+        elif args['cut_mix'] == 'CMO_OBJ_DET' and args['start_cut_mix']< epoch < (
+                args['epochs'] - args['end_cut_mix']) and r < args["mixup_prob"]:
             # generate mixed sample
             lam = np.random.beta(args["beta"], args["beta"])
             print("---Calling Object Detection. Batch number: ", i)
