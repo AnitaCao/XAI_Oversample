@@ -21,6 +21,7 @@ RC_scripts/
 CMO/imbalance_data/*.txt
 *.png
 yolov5/
+yolov5s.pt
 
 # files only in RC account for testing purposes. Remove before submit.
 test_files_for_RC/
