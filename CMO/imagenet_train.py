@@ -28,7 +28,7 @@ matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 import cv2
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-import utils
+import my_utils
 import gradcam
 
 #from utils import load_image, save_img_with_heatmap, check_path_exist, apply_transforms, save_heatmap

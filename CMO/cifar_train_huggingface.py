@@ -25,7 +25,7 @@ import matplotlib.pyplot as plt
 import sys
 import cv2
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-import utils
+import my_utils
 import gradcam
 
 args = {}

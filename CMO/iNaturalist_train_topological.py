@@ -28,7 +28,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import cv2
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-import utils
+import my_utils
 import gradcam
 import feature_visualization_and_distance as fvd
 
@@ -37,8 +37,8 @@ import feature_visualization_and_distance as fvd
 
 args = {}
 args['dataset'] = 'iNaturalist_lt' #iNaturalist, iNaturalist_lt, iNaturalist_lt_Radom
-#args['root'] = 'D:/anita/Research/iNaturalist/' #my local machine 
-args['root'] = '/home/tcvcs/image_datasets/iNaturalist/' #server
+args['root'] = 'D:/anita/Research/iNaturalist/' #my local machine 
+#args['root'] = '/home/tcvcs/image_datasets/iNaturalist/' #server
 args['arch'] = 'resnet50'
 args['loss_type'] = 'BS'
 args['train_rule'] = 'DRW'
@@ -56,7 +56,7 @@ args['print_freq'] = 100
 args['lr'] = 0.1
 args['momentum'] = 0.9
 args['weight_decay'] = 5e-4
-args['epochs'] = 200
+args['epochs'] = 100
 args['start_cut_mix'] = 25 # start data augmentation after 25th epoch
 args['end_cut_mix'] = 25 # do not use data augmentation for the last 25 epoches
 args['use_randaug'] = False
