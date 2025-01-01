@@ -24,21 +24,25 @@ from util.util import *
 from util.randaugment import rand_augment_transform
 import util.moco_loader as moco_loader
 import matplotlib
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 #matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 import cv2
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-import utils
+import my_utils
 import gradcam
 import feature_visualization_and_distance as fvd
+from PIL import Image
+
 
 #from utils import load_image, save_img_with_heatmap, check_path_exist, apply_transforms, save_heatmap
 
 
 args = {}
 args['dataset'] = 'iNaturalist_lt' #iNaturalist, iNaturalist_lt, iNaturalist_lt_Radom
-#args['root'] = 'D:/anita/Research/iNaturalist/' #my local machine 
-args['root'] = '/home/tcvcs/image_datasets/iNaturalist/' #server
+args['root'] = 'D:/anita/Research/iNaturalist/' #my local machine 
+#args['root'] = '/home/tcvcs/image_datasets/iNaturalist/' #server
 args['arch'] = 'resnet50'
 args['loss_type'] = 'BS'
 args['train_rule'] = 'DRW'
@@ -47,7 +51,7 @@ args['rand_number'] = 0
 args['mixup_prob'] = 0.5
 args['exp_str'] = 'exp'
 args['seed'] = None
-args['gpu'] = None
+args['gpu'] = 0
 args['resume'] = False
 args['start_epoch'] = 0
 args['batch_size'] = 16 #128
@@ -57,7 +61,7 @@ args['lr'] = 0.1
 args['momentum'] = 0.9
 args['weight_decay'] = 5e-4
 args['epochs'] = 200
-args['start_cut_mix'] = 25 # start data augmentation after 25th epoch
+args['start_cut_mix'] = -1 # or 25 start data augmentation after 25th epoch
 args['end_cut_mix'] = 25 # do not use data augmentation for the last 25 epoches
 args['use_randaug'] = False
 args['beta'] = 1
@@ -568,8 +572,7 @@ def train(device, train_loader, model, gc, criterion, optimizer, epoch, args, lo
             print("---Calling Object Detection. Batch number: ", i)
             start = time.time()
             #TODO: Implement object detection based bounding box cut
-            yolo5 = load_yolo5()
-            bboxes = get_targeted_bboxes_with_yolo(yolo5, input, target)
+            bboxes = get_targeted_bboxes_with_yolo(input, target)
 
             #TODO: Implement data augmentation for the selected region of the foreground 
                 #before mixing with the background
@@ -620,6 +623,7 @@ def train(device, train_loader, model, gc, criterion, optimizer, epoch, args, lo
                
         else:
             output = model(input)
+            output = output.to(device)
             loss = criterion(output, target).mean()
 
         # measure accuracy and record loss
@@ -693,9 +697,8 @@ def getCountour(threshold, saliency):
      #add bouding box around ROI 
     saliency = saliency.squeeze(0)
 
-    #_, binary_saliency = cv2.threshold(saliency, threshold, 255, cv2.THRESH_BINARY) # Convert the saliency map to binary
-    binary_saliency = cv2.adaptiveThreshold(np.uint8(saliency), 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 11, 2
-)
+    _, binary_saliency = cv2.threshold(saliency, threshold, 255, cv2.THRESH_BINARY) # Convert the saliency map to binary
+    #binary_saliency = cv2.adaptiveThreshold(np.uint8(saliency), 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 11, 2)
     # Convert binary_saliency to 8-bit image
     binary_saliency = np.uint8(binary_saliency)
 
@@ -753,6 +756,18 @@ def augment_roi(roi):
     #Horizontal flipping
     flipped_roi = cv2.flip(roi, 1)
     augmented_rois.append(flipped_roi)
+     
+     
+    # Debug and visualize each augmented ROI
+    for i, aug_roi in enumerate(augmented_rois):
+        plt.figure()
+        if isinstance(aug_roi, torch.Tensor):  # Handle PyTorch tensors
+            aug_roi = aug_roi.permute(1, 2, 0).cpu().numpy()
+        plt.imshow(aug_roi, cmap='gray' if aug_roi.ndim == 2 else None)
+        plt.title(f"Augmented ROI {i}")
+        plt.show()
+    
+    
     return augmented_rois
 
 
@@ -815,12 +830,7 @@ def process_cutmix_batch(images, bboxes, backgrounds):
     return np.stack(cutmix_images)
 
 
-#load yolo5 model for object detection
-def load_yolo5():
-    model = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True)
-    return model
-
-def get_targeted_bboxes_with_yolo(model, images, class_ids, conf_thres=0.25):
+def get_targeted_bboxes_with_yolo(images, class_ids, conf_thres=0.15):
     """
     Extract one bounding box for a specific class ID for each image in a batch.
 
@@ -835,41 +845,78 @@ def get_targeted_bboxes_with_yolo(model, images, class_ids, conf_thres=0.25):
         List[Tuple or None]: List of bounding boxes (xmin, ymin, xmax, ymax, confidence, class_id)
                              or None if no box is detected for the targeted class in that image.
     """
-    # Perform inference
-    results = model(images)
+    
+    # Resize to 640x640
+    transform = transforms.Compose([
+        transforms.Resize((640, 640)),  # Resize to 128x128
+        transforms.ToTensor(),          # Convert to PyTorch tensor
+    ])
+    images_resized = torch.stack([
+        transform(
+            Image.fromarray((image.cpu().numpy().transpose(1, 2, 0)*255).astype('uint8'))
+            ) 
+        for image in images  
+    ])
+    
+    model = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True)
 
-    # Ensure the length of class_ids matches the batch size
+    results = model(images_resized)
+    
+    print(images_resized.shape)  # Should be (16, 3, 640, 640)
+    print(images_resized.min(), images_resized.max())  # Should be in the range [0, 1]
+
     assert len(images) == len(class_ids), "Mismatch between batch size and class_ids length."
 
-    # Extract bounding boxes for each image
     bboxes_per_image = []
-    for i, (pred, target_class_id) in enumerate(zip(results.xyxy, class_ids)):
-        # Filter bounding boxes for the specific class_id and confidence threshold
-        filtered_boxes = [
-            box for box in pred.cpu().numpy() if box[-1] == target_class_id and box[-2] >= conf_thres
-        ]
+    
+    for i in range(results.size(0)):  # Loop over batch
+        pred = results[i]  # Predictions for the i-th image, shape (num_anchors, 85)
+        _, image_height, image_width = images[i].shape
 
-        if filtered_boxes:
-            # Choose the box with the highest confidence
-            best_box = max(filtered_boxes, key=lambda box: box[-2])  # Sort by confidence
-            bboxes_per_image.append((
-                int(best_box[0]),  # xmin
-                int(best_box[1]),  # ymin
-                int(best_box[2]),  # xmax
-                int(best_box[3]),  # ymax
-                best_box[-2],      # confidence
-                int(best_box[-1])  # class_id
-            ))
+        pred = pred[pred[:, 4] >= conf_thres]  # Keep boxes with confidence >= conf_thres
+
+        bboxes = []  # List to store bounding boxes for the i-th image
+        if pred.shape[0] > 0:  # If there are detections
+            for box in pred:
+                xmin, ymin, xmax, ymax, confidence, class_id = box[:6]
+                # Scale the bounding box back to the original dimensions
+                xmin = xmin * original_width / resized_width
+                ymin = ymin * original_height / resized_height
+                xmax = xmax * original_width / resized_width
+                ymax = ymax * original_height / resized_height
+                bboxes.append((xmin, ymin, xmax, ymax, confidence, class_id))
         else:
-            # No bounding box found for the targeted class
-            bboxes_per_image.append(None)
+            # No bounding box found above the confidence threshold
+            print(f"No bounding box above the confidence threshold is found for class {class_ids[i]} in image {i}")
+            bbox_width, bbox_height = int(image_width * 0.5), int(image_height * 0.5)
+            center_x, center_y = image_width // 2, image_height // 2
+            xmin = max(center_x - bbox_width // 2, 0)
+            ymin = max(center_y - bbox_height // 2, 0)
+            xmax = min(center_x + bbox_width // 2, image_width)
+            ymax = min(center_y + bbox_height // 2, image_height)
 
+            # Append the center bounding box with default confidence and class ID
+            bboxes.append((xmin, ymin, xmax, ymax, 0.5, class_ids[i])) 
+        
+        bboxes_per_image.append(bboxes)
+       
+        yolo_visualization(images[i], bboxes_per_image[i], class_ids[i])
+         
     return bboxes_per_image
 
 
-
-
-
+def yolo_visualization(image, bbox, class_id):
+    image = image.permute(1, 2, 0).cpu().numpy()
+    plt.figure(figsize=(8, 8))
+    plt.imshow(image)
+    plt.axis('off')
+    
+    xmin, ymin, xmax, ymax, _, _ = bbox
+    rect = patches.Rectangle((xmin, ymin), xmax - xmin, ymax - ymin, linewidth=2, edgecolor='r', facecolor='none')
+    plt.gca().add_patch(rect)
+    plt.text(xmin, ymin, f"Class {class_id}", fontsize=12, color='r')
+    plt.show()
+    
 
 
 def rand_bbox(size, lam):
@@ -927,6 +974,7 @@ def validate(device, val_loader, model, criterion, epoch,args, log, tf_writer, f
 
             # compute output
             output = model(input)
+            output = output.to(device)
             loss = criterion(output, target)
 
             # measure accuracy and record loss
