@@ -56,9 +56,9 @@ def calc_confusion_mat(val_loader, model, args):
     all_targets = []
     with torch.no_grad():
         for i, (input, target) in enumerate(val_loader):
-            if args["gpu"] is not None:
-                input = input.cuda(args["gpu"], non_blocking=True)
-            target = target.cuda(args["gpu"], non_blocking=True)
+            if args.gpu is not None:
+                input = input.cuda(args.gpu, non_blocking=True)
+            target = target.cuda(args.gpu, non_blocking=True)
 
             # compute output
             output = model(input)
@@ -74,9 +74,9 @@ def calc_confusion_mat(val_loader, model, args):
 
     print('Class Accuracy : ')
     print(cls_acc)
-    classes = [str(x) for x in args["cls_num_list"]]
+    classes = [str(x) for x in args.cls_num_list]
     plot_confusion_matrix(all_targets, all_preds, classes)
-    plt.savefig(os.path.join(args["root_log"], args["store_name"], 'confusion_matrix.png'))
+    plt.savefig(os.path.join(args.root_log, args.store_name, 'confusion_matrix.png'))
 
 
 def plot_confusion_matrix(y_true, y_pred, classes,
@@ -121,9 +121,9 @@ def plot_confusion_matrix(y_true, y_pred, classes,
 
 
 def prepare_folders(args):
-    folders_util = [args['root_log'], args['root_model'],
-                    os.path.join(args['root_log'], args['store_name']),
-                    os.path.join(args['root_model'], args['store_name'])]
+    folders_util = [args.root_log, args.root_model,
+                    os.path.join(args.root_log, args.store_name),
+                    os.path.join(args.root_model, args.store_name)]
     for folder in folders_util:
         if not os.path.exists(folder):
             print('creating folder ' + folder)
@@ -131,12 +131,12 @@ def prepare_folders(args):
 
 
 def save_checkpoint(args, state, is_best, epoch):
-    filename = '%s/%s/ckpt.pth.tar' % (args["root_model"], args["store_name"])
+    filename = '%s/%s/ckpt.pth.tar' % (args.root_model, args.store_name)
     torch.save(state, filename)
     if is_best:
         shutil.copyfile(filename, filename.replace('pth.tar', 'best.pth.tar'))
     if epoch % 20 == 0:
-        filename = '%s/%s/%s_ckpt.pth.tar' % (args["root_model"], args["store_name"], str(epoch))
+        filename = '%s/%s/%s_ckpt.pth.tar' % (args.root_model, args.store_name, str(epoch))
         torch.save(state, filename)
 
 
