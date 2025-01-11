@@ -319,9 +319,12 @@ def augment_roi(roi, augmentation_types=None):
     
     return augmented_rois
 
-def mix_with_augmented_roi(image, backgrounds, bbox, augmented_rois):
+# Mix augmented ROIs with different backgrounds
+
+def mix_with_augmented_roi(backgrounds, bbox, augmented_rois):
 
     augmented_images = []
+    lam_list = []
     x1, y1, x2, y2 = bbox
     original_w = x2 - x1
     original_h = y2 - y1
@@ -353,8 +356,17 @@ def mix_with_augmented_roi(image, backgrounds, bbox, augmented_rois):
             new_image[:, y1:y2, x1:x2] = aug_roi
             
         augmented_images.append(new_image)
+        
+        # Calculate lambda: scaling factor affects the ROI area
+        scaling_factor = (roi_h * roi_w) / (original_h * original_w)
+        original_foreground_area = original_h * original_w
+        scaled_foreground_area = scaling_factor * original_foreground_area
+        
+        total_area = new_image.shape[1] * new_image.shape[2]  # H * W of the background
+        lam = scaled_foreground_area / total_area
+        lam_list.append(lam)
     
-    return augmented_images
+    return augmented_images, lam_list
 
 
 def visualize_augmented_results(original_image, augmented_images, bbox):
@@ -408,6 +420,7 @@ def generate_mixed_images_with_augmentation(images, backgrounds, masks, types=['
         types (list): List of augmentation types to apply
     """
     augmented_images = []
+    lam_list = []
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     
     # Calculate number of augmentations per image
@@ -436,8 +449,8 @@ def generate_mixed_images_with_augmentation(images, backgrounds, masks, types=['
             augmented_rois = augment_roi(roi, types)
             
             # Apply augmented ROIs to different background images
-            mixed_images = mix_with_augmented_roi(
-                images[idx], 
+            mixed_images, lam_list = mix_with_augmented_roi(
+                #images[idx], 
                 image_backgrounds, 
                 bbox, 
                 augmented_rois
@@ -454,7 +467,61 @@ def generate_mixed_images_with_augmentation(images, backgrounds, masks, types=['
         else:
             print(f"No valid bounding box found for image {idx+1}")
             
-    return augmented_images
+    return augmented_images, lam_list
+
+
+def generate_mixed_images_without_augmentation(images, backgrounds, masks):
+    """
+    Generate mixed images without applying augmentations in a 1-to-1 manner.
+    
+    Args:
+        images (torch.Tensor): Input images (N, C, H, W).
+        backgrounds (torch.Tensor): Background images (N, C, H, W).
+        masks (torch.Tensor): Binary masks (N, 1, H, W).
+    
+    Returns:
+        mixed_images: List of mixed images (N).
+        lam_list: List of lambda values representing the ratio of the foreground region to the whole background image.
+    """
+    mixed_images = []
+    lam_list = []
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+
+    # Iterate over each image, background, and mask
+    for idx in range(len(images)):
+        # Get the mask for the current image
+        mask = masks[idx, 0].cpu().numpy()
+        
+        # Extract the bounding box from the mask
+        bbox = get_bounding_box_from_mask(mask)
+        if bbox is not None:
+            x1, y1, x2, y2 = bbox
+            
+            # Extract ROI from the original image
+            roi = images[idx, :, y1:y2, x1:x2]
+            
+            # Clone the corresponding background
+            new_image = backgrounds[idx].clone()
+            
+            # Insert the ROI into the background
+            new_image[:, y1:y2, x1:x2] = roi
+            
+            # Compute the foreground region area
+            foreground_area = (y2 - y1) * (x2 - x1)
+            
+            # Compute the total background area
+            total_area = new_image.size(1) * new_image.size(2)  # H * W
+            
+            # Compute lambda: foreground area / total area
+            lam = foreground_area / total_area
+            lam_list.append(lam)
+            
+            # Add the mixed image to the list
+            mixed_images.append(new_image.to(device))
+        else:
+            print(f"No valid bounding box found for image {idx+1}")
+    
+    return mixed_images, lam_list
 
 def get_backgrounds(loader, num_batches=6):
     """
