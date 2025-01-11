@@ -96,8 +96,12 @@ def generate_mixing_masks(cam_maps, lam):
         actual_lam = 1 - mask.mean()
         masks.append(mask)
         actual_lams.append(actual_lam)
+        
+    masks = np.array(masks)  # Combine the list of numpy arrays into a single numpy ndarray
+    masks = torch.from_numpy(masks).float().unsqueeze(1).cuda()  # Convert to PyTorch tensor
+
     
-    masks = torch.FloatTensor(masks).unsqueeze(1).cuda()
+    #masks = torch.FloatTensor(masks).unsqueeze(1).cuda()
     actual_lams = torch.FloatTensor(actual_lams).cuda()
     
     return masks, actual_lams
@@ -406,7 +410,11 @@ def visualize_augmented_results(original_image, augmented_images, bbox):
         axes[i+1].set_title(f'Augmented {i+1}')
         axes[i+1].axis('off')
     
-    plt.tight_layout()
+    plt.tight_layout()    
+    save_path = "plots_from_xai_cmo_augmentation.png"
+    plt.savefig(save_path, bbox_inches='tight', dpi=300)
+    print(f"Figure saved to {save_path}")
+    
     plt.show()
 
 def generate_mixed_images_with_augmentation(images, backgrounds, masks, types=['scale', 'rotate', 'flip']):
@@ -542,6 +550,7 @@ def get_backgrounds(loader, num_batches=6):
         batch_count += 1
 
     # Concatenate all batches along the batch dimension
+    #backgrounds = [torch.tensor(bg).cuda() if not isinstance(bg, torch.Tensor) else bg for bg in backgrounds]
     return torch.cat(backgrounds, dim=0).cuda()
 
 # Example usage:
