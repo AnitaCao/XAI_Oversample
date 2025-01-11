@@ -17,29 +17,17 @@ from losses import *
 from opts import parser
 import warnings
 from util.util import *
-from util.autoaug import CIFAR10Policy, Cutout
 import util.moco_loader as moco_loader
+from util.randaugment import rand_augment_transform
+from imbalance_data.lt_data import LT_Dataset, Imb_Dataset, load_imb_imagenet
 #matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 import sys
 import cv2
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import my_utils
-import XAI_Oversample.region_select_copy as region_select
+import region_select
 
-
-
-''' args['cut_mix']: CMO, CMO_XAI, CMO_XAI_MASK, TODO: CMO_OBJ_DET
-Data augmentation type is for the mixup. CMO is the original random cut, 
-CMO_XAI is gradcam based bounding box cut, CMO_XAI_MASK is gradcam based mask cut.
-TODO: Implement a new data augmentation method based on the bounding box from object detection
-instead of the bounding box from the saliency map.
-
-args['sample_method']: topological or frequency. 
-topological is the new data selection method based on the distance of the class centroids of the training samples.
-frequency is the original data selection method based on the frequency of the classes in the training samples.
-
-'''
 
 best_acc1 = 0
 
@@ -75,7 +63,6 @@ def main_worker(gpu, ngpus_per_node, args):
     global train_cls_num_list
     global cls_num_list_cuda
 
-
     args.gpu = gpu
     if args.gpu is not None:
         print("Use GPU: {} for training".format(args.gpu))
@@ -93,15 +80,13 @@ def main_worker(gpu, ngpus_per_node, args):
     num_ftrs = XAI_model.fc.in_features
     XAI_model.fc = nn.Linear(num_ftrs, num_classes) 
     print("XAI model: ", XAI_model) 
+    
 
     XAI_model = XAI_model.cuda()
     XAI_model.eval()
     
-    model = models.resnet50(pretrained=True).cuda().eval()
-    gc = region_select.GradCAM(model, 'layer4')
-    #gc = gradcam.GradCAM(XAI_model, target_layer='layer4')
-
-
+    gc = region_select.GradCAM(XAI_model, target_layer='layer4')
+    
     if args.gpu is not None:
         torch.cuda.set_device(args.gpu)
         model = model.cuda(args.gpu)
@@ -119,85 +104,87 @@ def main_worker(gpu, ngpus_per_node, args):
     cudnn.benchmark = True
 
     if args.use_randaug:
-        """
-        if use_randaug == True, we follow randaug following PaCo's setting (ICCV'2021),
-        400 epoch & Randaug 
-        https://github.com/dvlab-research/Parametric-Contrastive-Learning/blob/main/LT/paco_cifar.py
-        """
         print("use randaug!!")
-        augmentation_regular = [
-            transforms.RandomCrop(32, padding=4),
-            transforms.RandomHorizontalFlip(),
-            CIFAR10Policy(),  # add AutoAug
-            transforms.ToTensor(),
-            Cutout(n_holes=1, length=16),
-            transforms.Normalize(
-                (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-        ]
+        rgb_mean = (0.485, 0.456, 0.406)
+        ra_params = dict(translate_const=int(224 * 0.45),
+                         img_mean=tuple([min(255, round(255 * x)) for x in rgb_mean]), )
 
-        augmentation_sim_cifar = [
-            transforms.RandomResizedCrop(size=32, scale=(0.2, 1.)),
+        normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        augmentation_randncls = [
+            transforms.RandomResizedCrop(224, scale=(0.08, 1.)),
             transforms.RandomHorizontalFlip(),
             transforms.RandomApply([
-                transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)
-            ], p=0.8),
+                transforms.ColorJitter(0.4, 0.4, 0.4, 0.0)
+            ], p=1.0),
+            rand_augment_transform('rand-n{}-m{}-mstd0.5'.format(2, 10), ra_params),
+            transforms.ToTensor(),
+            normalize,
+        ]
+        augmentation_sim = [
+            transforms.RandomResizedCrop(224),
+            transforms.RandomApply([
+                transforms.ColorJitter(0.4, 0.4, 0.4, 0.0)  # not strengthened
+            ], p=1.0),
             transforms.RandomGrayscale(p=0.2),
             transforms.RandomApply([moco_loader.GaussianBlur([.1, 2.])], p=0.5),
+            transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
-            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+            normalize
         ]
-        transform_train = [transforms.Compose(augmentation_regular), transforms.Compose(augmentation_sim_cifar)]
+        transform_train = [transforms.Compose(augmentation_randncls), transforms.Compose(augmentation_sim)]
 
         transform_val = transforms.Compose([
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
             transforms.ToTensor(),
-            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-        ])
+            normalize])
 
     else:
         transform_train = transforms.Compose([
-            transforms.Resize((224, 224)),
-            #transforms.RandomCrop(32, padding=4),
+            transforms.RandomResizedCrop(224),
             transforms.RandomHorizontalFlip(),
+            transforms.ColorJitter(brightness=0.4, contrast=0.4, saturation=0.4, hue=0),
             transforms.ToTensor(),
-            transforms.Normalize(mean=mean, std=std),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
         transform_val = transforms.Compose([
+            transforms.Resize(256),
+            transforms.CenterCrop(224),
             transforms.ToTensor(),
-            transforms.Normalize(mean=mean, std=std),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
 
     print(args)
-
+    '''
+    Current dataset is a long tailed dataset with 1000 classes (from CMO paper).
+    TODO: Create different Datases with different imbalance ratio. 
+    '''
     
-    if num_classes == 10:
-        train_dataset = load_dataset("tomas-gajarsky/cifar10-lt", 'r-10', split="train")
-        val_dataset = load_dataset("tomas-gajarsky/cifar10-lt", 'r-10', split="test")  
-    elif num_classes == 100:
-        train_dataset = load_dataset("tomas-gajarsky/cifar100-lt", 'r-10', split="train")
-        val_dataset = load_dataset("tomas-gajarsky/cifar100-lt", 'r-10', split="test")
+    if args.num_classes == 1000:
+        print("Using ImageNet_LT dataset")
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        train_path = os.path.join(script_dir, 'ImageNet_LT', 'ImageNet_LT_train.txt')
+        val_path = os.path.join(script_dir, 'ImageNet_LT', 'ImageNet_LT_val.txt')
+        train_dataset = LT_Dataset(args.root, train_path, transform_train,
+                               use_randaug=args.use_randaug)
+        val_dataset = LT_Dataset(args.root, val_path, transform_val)
+        num_classes = len(np.unique(train_dataset.targets))
+        assert num_classes == 1000
     else:
-        warnings.warn('Dataset is not listed')
-        return
-    #calculate the number of samples in each class from the training dataset
-    if num_classes == 100:
-        label_name = 'fine_label' 
-    else:
-        label_name = 'label'
-        
+        data_path = os.path.join(args.root, 'train')
+        train_dataset, val_dataset = load_imb_imagenet(data_path, transform_train, transform_val)
+        num_classes = len(np.unique(train_dataset.targets))
+
+    print("Number of classes: ", num_classes)
+    print("Number of training samples: ", len(np.unique(val_dataset.targets)))
     cls_num_list = [0] * num_classes
-    for example in train_dataset:
-        label = example[label_name]
+    for label in train_dataset.targets:
         cls_num_list[label] += 1
-    
-    print('cls num list:') 
-    print(cls_num_list) 
-    print("total number of samples: ", sum(cls_num_list)) #total number of samples:  12006 for cifar10_lt or 19573 for cifar100_lt
-    args.cls_num_list = cls_num_list
-    train_cls_num_list = np.array(cls_num_list) 
+    print('cls num list:')
+    print(cls_num_list)
 
-    train_dataset = val_dataset.map(lambda x: {'img': transform_train(Image.fromarray(np.array(x['img']))), 'label': x[label_name]}, batched=False)
-    val_dataset = val_dataset.map(lambda x: {'img': transform_val(Image.fromarray(np.array(x['img']))), 'label': x[label_name]}, batched=False)
-    
+    args.cls_num_list = cls_num_list
+    train_cls_num_list = np.array(cls_num_list)
 
     train_sampler = None
 
@@ -208,15 +195,16 @@ def main_worker(gpu, ngpus_per_node, args):
     val_loader = torch.utils.data.DataLoader(
         val_dataset, batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=True)
+    
     weighted_train_loader = None
     weighted_cls_num_list = [0] * num_classes
 
     if args.cut_mix.startswith('CMO'):
-        targets = train_dataset['label']
+        
         cls_weight = 1.0 / (np.array(cls_num_list) ** args.weighted_alpha)
         cls_weight = cls_weight / np.sum(cls_weight) * len(cls_num_list)
         
-        samples_weight = np.array([cls_weight[t] for t in targets])
+        samples_weight = np.array([cls_weight[t] for t in train_dataset.targets])
         samples_weight = torch.from_numpy(samples_weight)
         samples_weight = samples_weight.double()
         
@@ -351,7 +339,7 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, 
         
         if args.cut_mix.startswith('CMO') and args.start_cut_mix < epoch < (args.epochs - args.end_cut_mix):
             try:
-                batch2 = next(inverse_iter)
+                batch2 = next(inverse_iter) #minority samples
                 input2, target2 = batch2['img'], batch2['label']
             except:
                 inverse_iter = iter(weighted_train_loader)
@@ -380,55 +368,37 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, 
             # generate mixed sample
             lam = np.random.beta(args.beta, args.beta)
             bbx1, bby1, bbx2, bby2 = rand_bbox(input.size(), lam)
-
-            input_ori = input.clone() # save the original input for display purposes
-
             input[:, :, bbx1:bbx2, bby1:bby2] = input2[:, :, bbx1:bbx2, bby1:bby2]
             # adjust lambda to exactly match pixel ratio
             lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (input.size()[-1] * input.size()[-2]))
             # compute output
             output = model(input)
             loss = criterion(output, target) * lam + criterion(output, target2) * (1. - lam)
-            #testing_plot(input, input2)
-            #print("just for testing purposes: CMO random mixup images: ")
-            #testing_plot(input_ori, input2, input)
 
         elif args.cut_mix == 'CMO_XAI' and args.start_cut_mix < epoch < (
                 args.epochs - args.end_cut_mix) and r < args.mixup_prob:
             # generate mixed sample
             lam = np.random.beta(args.beta, args.beta)
-
-
-            print("---Calling XAI_Box. Batch number: ", i)
             start = time.time()
             
-            # Process images
-            cam_maps, probs = gradcam(input2)
-            print("CAM maps shape:", cam_maps.shape)
-        
+            cam_maps, probs = gradcam.grad_cam(input2)
             masks, actual_lams = gradcam.generate_mixing_masks(cam_maps, lam=0.7)
-        
-            gradcam.visualize_cam_with_bbox(input2, cam_maps, masks)
-        
-
-            # Generate mixed images
-            backgrounds = gradcam.get_backgrounds(train_loader, num_batches=6)
-            print(f"Backgrounds shape: {backgrounds.shape}")
-            augmented_images = gradcam.generate_mixed_images_with_augmentation(input2, backgrounds, masks, types=['scale', 'rotate', 'flip'])
-            
-        
 
             time1 = time.time()
-            print('Total time to generate saliencys is: {:.2f} second'.format((time1-start)))  
-  
-
+   
             input_ori = input.clone() # save the original input for display purposes
             lam_list = []
             
             if args.data_aug:
-                input = TODO 
+                #duplicate the input2 to make it 4 times for data augmentation
+                input2 = input2.repeat_interleave(4, dim=0)
+                mixed_samples = gradcam.generate_mixed_images_with_augmentation(input2, input, masks, types=['scale', 'rotate', 'flip'])
+                
+                input = input.repeat_interleave(4, dim=0)
                 target = target.repeat_interleave(4, dim=0)
             else:
+                gradcam.apply_masks(input, masks)
+                
                 masks = torch.zeros_like(input)  # Create a zero mask for all images
                 for j in range(len(bboxes)):
                     bbx1, bby1, bbx2, bby2 = bboxes[j]
@@ -441,18 +411,13 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, 
             output = model(input)
             loss = criterion(output, target) * torch.tensor(lam_list).cuda(args.gpu) + criterion(output, target2) * (1. - torch.tensor(lam_list).cuda(args.gpu))
             loss = loss.mean()
-            #print("just for testing purposes: CMO+XAI mixup images: ")
-            #testing_plot(input_ori, input2, input)
-                #Use mask to blend input1 and input2 instead of using bouding box.    
+ 
         elif args.cut_mix == 'CMO_XAI_MASK' and args.start_cut_mix < epoch < (
             args.epochs - args.end_cut_mix) and r < args.mixup_prob:
                         # generate mixed sample
             lam = np.random.beta(args.beta, args.beta)
-            print("---Calling XAI_MASK. Batch number: ", i)
             start = time.time()
             saliencys, _ = gradcam(input2, None) 
-            
-            #saliency_visualisation(input2, saliencys)
             
             time1 = time.time()
             print('Total time to generate saliencys is: {:.2f} second'.format((time1-start))) 
@@ -462,7 +427,6 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, 
             # Convert refined_binary_masks to a torch tensor if it isn't already
             MASK_list = torch.tensor(MASK_list, dtype=torch.float32).cuda(args.gpu)
 
-            #repace input's area with input2's area based on bounding box
             input_ori = input.clone() # save the original input for display purposes
 
             # Use the mask to blend input1 and input2
@@ -470,8 +434,7 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, 
             output = model(input)
             loss = criterion(output, target) * torch.tensor(lam_list).cuda(args.gpu) + criterion(output, target2) * (1. - torch.tensor(lam_list).cuda(args.gpu))
             loss = loss.mean()
-            #print("Just for testing purposes: CMO+XAI mixup images: ")
-            #testing_plot(input_ori, input2, input)
+          
         elif args.cut_mix == 'CMO_OBJ_DET' and args.start_cut_mix< epoch < (
                 args.epochs - args.end_cut_mix) and r < args.mixup_prob:
             # generate mixed sample
@@ -520,43 +483,7 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, 
     #tf_writer.add_scalar('acc/train_top5', top5.avg, epoch)
     #tf_writer.add_scalar('lr', optimizer.param_groups[-1]['lr'], epoch)
 
-def XAI_MASK(saliencys, lam):
-    # saliency is a batch of saliency maps. For example: 32 by 1 by 224 by 224   
-    #TODO: threshold should be related to lam.
-    threshold = 0.5
-    binary_masks = (saliencys > threshold).astype(np.uint8)
-    #binary_masks = np.squeeze(binary_masks, axis=1)
-    
-    refined_binary_masks = np.array([refine_mask(mask[0]) for mask in binary_masks])   
-    # Calculate the share of the ROI for each mask in the batch
-    roi_shares = np.mean(refined_binary_masks, axis=(1, 2))
 
-    return binary_masks,roi_shares
-
-def refine_mask(mask):
-    kernel = np.ones((3, 3), np.uint8)
-    refined_mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-    refined_mask = cv2.morphologyEx(refined_mask, cv2.MORPH_OPEN, kernel)
-    return refined_mask
-
-def XAI_box(saliencys, lam):
-
-    # saliency is a batch of saliency maps. For example: 32 by 1 by 224 by 224
-
-    #print('Saliency generated by Grad-CAM')
-    #saliency_visualisation(batch, saliency) #visualise the saliency map
-    
-    #TODO: threshold should be related to lam.
-    threshold = 0.5 
-
-    '''
-    #for each saliency map in the batch, print out the min and max values
-    for k in range(len(saliencys)):
-        saliency = saliencys[k].squeeze(0)
-        print("for image ", k, "min: ", np.min(saliency), "max: ", np.max(saliency))
-    '''
-    bboxes = getCountourList(threshold, saliencys)
-    return bboxes
 
 def rand_bbox(size, lam):
     W = size[2]
@@ -712,214 +639,12 @@ def paco_adjust_learning_rate(optimizer, epoch, args):
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
-def testing_plot(input, input2):
-    import matplotlib
-    matplotlib.use('TkAgg')
-    import matplotlib.pyplot as plt
-    from torchvision.utils import make_grid
-    grid_img = make_grid(input[:20], nrow=5)
-    grid_img = grid_img.permute(1, 2, 0)
-    grid_img = grid_img.cpu().numpy()
-    grid_img2 = make_grid(input2[:20], nrow=5)
-    grid_img2 = grid_img2.permute(1, 2, 0)
-    grid_img2 = grid_img2.cpu().numpy()
-
-    plt.figure(figsize=(10, 10))
-    plt.imshow(grid_img)
-    plt.axis('off')
-    plt.show()
-
-    plt.figure(figsize=(10, 10))
-    plt.imshow(grid_img2)
-    plt.axis('off')
-    plt.show()
-
-def testing_plot(input_ori, input2, mixed_input):
-    # Denormalize the images
-    img1 = denormalize(input_ori.cpu())
-    img2 = denormalize(input2.cpu())
-    img3 = denormalize(mixed_input.cpu())
-
-    img_index = 5
-    img1 = img1[img_index].numpy()
-    img2 = img2[img_index].numpy()
-    img3 = img3[img_index].numpy()
-
-    # Move color channel to last dimension
-    img1 = np.transpose(img1, (1, 2, 0)) # (3, 32, 32) -> (32, 32, 3)
-    img2 = np.transpose(img2, (1, 2, 0))
-    img3 = np.transpose(img3, (1, 2, 0))
-
-    # Create subplots
-    fig, axs = plt.subplots(1, 3)
-
-    # Show images
-    axs[0].imshow(img1)
-    axs[0].set_title('Original Image')
-
-    axs[1].imshow(img2)
-    axs[1].set_title('Input2 Image')
-
-    axs[2].imshow(img3)
-    axs[2].set_title('Mixed Input Image')
-
-    # Remove axis
-    for ax in axs:
-        ax.axis('off')
-
-    plt.show()
 
 
-def denormalize(image_batch,  means = [0.4914, 0.4822, 0.4465], stds = [0.2023, 0.1994, 0.2010]):
+def denormalize(image_batch, means=[0.485, 0.456, 0.406], stds=[0.229, 0.224, 0.225]):
     means = torch.tensor(means).view(1, 3, 1, 1)
     stds = torch.tensor(stds).view(1, 3, 1, 1)
     return image_batch * stds + means
-
-#for ploting purposes, only take one image in the batch
-def saliency_visualisation(batch, saliencys):
-    imgs = denormalize(batch.cpu())
-    img = imgs[15].numpy()
-    img = np.transpose(img, (1, 2, 0)) # move color channel to last dimension
-
-    saliency = saliencys[15].squeeze(0)
-
-    saliency = cv2.resize(saliency, (32,32))
-    img = cv2.resize(img, (32,32))
-    #saliency = cv2.resize(saliency, (224, 224))
-
-    print(np.min(saliency))
-    print(np.max(saliency))
-
-    fig, ax = plt.subplots(1,3)
-    
-    img = img * 255
-
-    img_heatmap = my_utils.save_img_with_heatmap(img, saliency, None, style='zhou', normalise=True)
-    heatmap = my_utils.save_heatmap(saliency, None, normalise=True)
-
-    #add bouding box around ROI 
-    threshold = 0.5  
-    _, binary_saliency = cv2.threshold(saliency, threshold, 255, cv2.THRESH_BINARY) # Convert the saliency map to binary
-
-    # Convert binary_saliency to 8-bit image
-    binary_saliency = np.uint8(binary_saliency)
-
-    # Find contours in the binary image
-    contours, _ = cv2.findContours(binary_saliency, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    img_np = np.array(img).astype(np.uint8)
-    img_np = np.ascontiguousarray(img_np) # Make sure the array is contiguous for cv2.Rectangle
-
-    for contour in contours:
-        x, y, w, h = cv2.boundingRect(contour)
-        cv2.rectangle(img_np, (x, y), (x + w, y + h), (0, 255, 0), 2)
-
-    ax[0].imshow((img).astype(np.uint8))
-    ax[1].imshow((heatmap[:, :, ::-1]).astype(np.uint8))
-    ax[2].imshow((img_np).astype(np.uint8))
-    plt.axis('off')
-
-
-def getCountour(threshold, saliency):
-     #add bouding box around ROI 
-    saliency = saliency.squeeze(0)
-    _, binary_saliency = cv2.threshold(saliency, threshold, 255, cv2.THRESH_BINARY) # Convert the saliency map to binary
-
-    # Convert binary_saliency to 8-bit image
-    binary_saliency = np.uint8(binary_saliency)
-
-    # Find contours in the binary image
-    contours, _ = cv2.findContours(binary_saliency, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    '''
-    # For each contour, find the bounding rectangle and draw it on the original image
-    for contour in contours:
-        x, y, w, h = cv2.boundingRect(contour)
-        cv2.rectangle(img_np, (x, y), (x + w, y + h), (0, 255, 0), 2)
-    '''
-    if len(contours) == 0:
-        return 0, 0, 0, 0
-    
-    largest_contour = max(contours, key=cv2.contourArea)
-    # Compute the bounding box of the largest contour
-    x, y, w, h = cv2.boundingRect(largest_contour)
-    
-    bbx1=x 
-    bby1=y
-    bbx2=x+w
-    bby2=y+h 
-
-    return bbx1, bby1, bbx2, bby2
-
-def getCountourList(threshold, saliencys):
-    bbx1_list = []
-    bby1_list = []
-    bbx2_list = []
-    bby2_list = []
-    for saliency in saliencys:
-        bbx1, bby1, bbx2, bby2 = getCountour(threshold, saliency)
-        bbx1_list.append(bbx1)
-        bby1_list.append(bby1)
-        bbx2_list.append(bbx2)
-        bby2_list.append(bby2)
-    #create a list of bounding box coordinates, for each image in the batch, shape 32 by 4
-    bboxes = np.array([bbx1_list, bby1_list, bbx2_list, bby2_list]).T
-    return bboxes
-
-
-def crop_roi(image, bounding_box):
-    bbx1, bby1, bbx2, bby2 = bounding_box
-    return image[:, bbx1:bbx2, bby1:bby2]
-
-def augment_roi(roi):
-    """
-    Apply augmentations to the Region of Interest (ROI).
-    
-    Args:
-        roi (torch.Tensor): ROI with shape (C, H, W).
-    
-    Returns:
-        list of torch.Tensor: List of augmented ROIs, each with shape (C, H, W).
-    """
-    augmented_rois = []
-    
-    # Convert to OpenCV format: (H, W, C)
-    roi_np = roi.permute(1, 2, 0).cpu().numpy()
-
-    # Original ROI
-    augmented_rois.append(roi)
-    
-    # Scaling
-    scaled_roi = cv2.resize(roi_np, None, fx=1.2, fy=1.2, interpolation=cv2.INTER_LINEAR)
-    scaled_roi = cv2.resize(scaled_roi, (roi_np.shape[1], roi_np.shape[0]), interpolation=cv2.INTER_LINEAR)
-    scaled_roi = torch.tensor(scaled_roi).permute(2, 0, 1).float()
-    augmented_rois.append(scaled_roi)
-    
-    # Rotation
-    h, w, _ = roi_np.shape
-    center = (w // 2, h // 2)
-    rotation_matrix = cv2.getRotationMatrix2D(center, angle=45, scale=1.0)
-    rotated_roi = cv2.warpAffine(roi_np, rotation_matrix, (w, h))
-    rotated_roi = np.expand_dims(rotated_roi, axis=-1) if rotated_roi.ndim == 2 else rotated_roi
-    rotated_roi = torch.tensor(rotated_roi).permute(2, 0, 1).float()
-    augmented_rois.append(rotated_roi)
-    
-    # Horizontal Flipping
-    flipped_roi = cv2.flip(roi_np, 1)
-    flipped_roi = torch.tensor(flipped_roi).permute(2, 0, 1).float()
-    augmented_rois.append(flipped_roi)
-    
-    '''
-     # Debug and visualize each augmented ROI
-    for i, aug_roi in enumerate(augmented_rois):
-        plt.figure()
-        if isinstance(aug_roi, torch.Tensor):  # Handle PyTorch tensors
-            aug_roi = aug_roi.permute(1, 2, 0).cpu().numpy()
-        plt.imshow(aug_roi, cmap='gray' if aug_roi.ndim == 2 else None)
-        plt.title(f"Augmented ROI {i}")
-        plt.show()
-    '''    
-    return augmented_rois
 
 
 
