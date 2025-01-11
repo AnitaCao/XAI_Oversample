@@ -796,8 +796,8 @@ def saliency_visualisation(batch, saliencys):
     fig, ax = plt.subplots(1,3)
     
     img = img * 255
-    img_heatmap = utils.save_img_with_heatmap(img, saliency, None, style='zhou', normalise=True)
-    heatmap = utils.save_heatmap(saliency, None, normalise=True)
+    img_heatmap = my_utils.save_img_with_heatmap(img, saliency, None, style='zhou', normalise=True)
+    heatmap = my_utils.save_heatmap(saliency, None, normalise=True)
 
     threshold = 0.5  
     _, binary_saliency = cv2.threshold(saliency, threshold, 255, cv2.THRESH_BINARY) # Convert the saliency map to binary
