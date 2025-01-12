@@ -399,12 +399,12 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, 
             lam = np.random.beta(args.beta, args.beta)
 
 
-            print("---Calling XAI_Box. Batch number: ", i)
+            #print("---Calling XAI_Box. Batch number: ", i)
             start = time.time()
             
             # Process images
             cam_maps, probs = gradcam(input2)
-            print("CAM maps shape:", cam_maps.shape)
+            #print("CAM maps shape:", cam_maps.shape)
         
             masks, actual_lams = region_select.generate_mixing_masks(cam_maps, lam=0.7)
             region_select.visualize_cam_with_bbox(input2, cam_maps, masks)
@@ -413,8 +413,8 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, 
   
             input_ori = input.clone() # save the original input for display purposes
             lam_list = []
-            print("original input type: ", type(input))
-            print("original tensor shape: ", input.shape) # torch.Size([16, 3, 224, 224])
+            #print("original input type: ", type(input))
+            #print("original tensor shape: ", input.shape) # torch.Size([16, 3, 224, 224])
             
             if args.data_aug:
                 # get 6 batchs of images from trainloader to use as backgrounds
@@ -428,15 +428,17 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, 
                         background = background.float()
                     backgrounds.append(background)
                 backgrounds = torch.cat(backgrounds, dim=0)
-                print(f"Backgrounds shape: {backgrounds.shape}")
-                mixed_imgs_list, lam_list = region_select.generate_mixed_images_with_augmentation(input2, backgrounds, masks, types=['scale', 'rotate', 'flip'])
                 
+                mixed_imgs_list, lam_list = region_select.generate_mixed_images_with_augmentation(input2, backgrounds, masks, types=['scale', 'rotate', 'flip'])  
+                    
+                #print(f"Mixed images list length: {len(mixed_imgs_list)}")
+                #print(f"First mixed image shape: {mixed_imgs_list[0].shape}")
                 
-                input = torch.cat(mixed_imgs_list, dim=0)
+                input = torch.stack(mixed_imgs_list, dim=0)
         
-                target = target.repeat_interleave(4, dim=0)
-                print("Generated input type: ", type(input))
-                print("Generated tensor shape: ", input.shape) #torch.Size([288, 224, 224])
+                target = target.repeat_interleave(6, dim=0)
+                #print("Generated input type: ", type(input))
+                #print("Generated tensor shape: ", input.shape) #torch.Size([288, 224, 224])
                 
 
             else:

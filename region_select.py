@@ -431,6 +431,16 @@ def generate_mixed_images_with_augmentation(images, backgrounds, masks, types=['
     lam_list = []
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     
+    #check if the number of backgrounds is 6 times the number of images. if not, randomly select backgorunds for the remaining images.
+    if len(backgrounds) != 6*len(images):
+        # Randomly select backgrounds for the remaining images
+        num_remaining = len(images) * 6 - len(backgrounds)
+        indices = torch.randint(0, len(backgrounds), (num_remaining,))
+        remaining_backgrounds = backgrounds[indices]
+
+        # Concatenate the sampled backgrounds to the existing ones
+        backgrounds = torch.cat([backgrounds, remaining_backgrounds], dim=0)
+    
     # Calculate number of augmentations per image
     num_augs_per_image = 6  # 1 original + 2 scales + 2 rotations + 1 flip
     
@@ -470,8 +480,8 @@ def generate_mixed_images_with_augmentation(images, backgrounds, masks, types=['
             augmented_images.extend(mixed_images)
         
             # Visualize results
-            visualize_augmented_results(images[idx].to(device), mixed_images, bbox)
-            print(f"Processed image {idx+1}: ROI shape {roi.shape}, Generated {len(augmented_rois)} augmentations")
+            # visualize_augmented_results(images[idx].to(device), mixed_images, bbox)
+            #rint(f"Processed image {idx+1}: ROI shape {roi.shape}, Generated {len(augmented_rois)} augmentations")
         else:
             print(f"No valid bounding box found for image {idx+1}")
             

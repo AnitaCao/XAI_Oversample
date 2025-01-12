@@ -31,7 +31,7 @@ parser.add_argument('--rand_number', default=0, type=int, help='fix random numbe
 parser.add_argument('--loss_type', default="BS", type=str, help='loss type / method', choices=('CE', 'LDAM', 'BS'))
 parser.add_argument('--train_rule', default='None', type=str, help='data sampling strategy for train loader',
                     choices=('None', 'CBReweight', 'DRW'))
-parser.add_argument('--epochs', default=200, type=int, metavar='N',
+parser.add_argument('--epochs', default=100,type=int, metavar='N',
                     help='number of total epochs to run')
 parser.add_argument('--lr', '--learning-rate', default=0.1, type=float,
                     metavar='LR', help='initial learning rate', dest='lr')
@@ -50,7 +50,7 @@ parser.add_argument('--wd', '--weight-decay', default=2e-4, type=float,
 parser.add_argument('--cut_mix', default="CMO_XAI", type=str, help='cut mix type',
                     choices=('vanilla', 'CMO','CMO-XAI', 'CMO-MASK'))
 parser.add_argument('--mixup_prob', default=0.5, type=float, help='mixup probability')
-parser.add_argument('--start_cut_mix', default=-1, type=int, help='start epoch for aug')
+parser.add_argument('--start_cut_mix', default=3, type=int, help='start epoch for aug')
 parser.add_argument('--end_cut_mix', default=3, type=int, help='how many epochs to turn off aug')
 parser.add_argument('--weighted_alpha', default=1, type=float, help='weighted alpha for sampling probability (q(1,k))')
 parser.add_argument('--beta', default=1, type=float, help='hyperparam for beta distribution')
