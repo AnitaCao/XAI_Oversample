@@ -25,3 +25,5 @@ yolov5s.pt
 
 # files only in RC account for testing purposes. Remove before submit.
 test_files_for_RC/
+CMO/*.log
+CMO/*.out
