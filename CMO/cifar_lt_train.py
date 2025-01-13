@@ -373,7 +373,7 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, 
 
         input = input.cuda(args.gpu, non_blocking=True)
         target = target.cuda(args.gpu, non_blocking=True)
-        # Data augmentation
+       
         r = np.random.rand(1)
         #r = 0.01
         if args.cut_mix == 'CMO' and args.start_cut_mix < epoch < (args.epochs - args.end_cut_mix) and r < args.mixup_prob:
@@ -397,17 +397,14 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, 
                 args.epochs - args.end_cut_mix) and r < args.mixup_prob:
             # generate mixed sample
             lam = np.random.beta(args.beta, args.beta)
-
-
             #print("---Calling XAI_Box. Batch number: ", i)
-            start = time.time()
-            
+            start = time.time() 
             # Process images
             cam_maps, probs = gradcam(input2)
             #print("CAM maps shape:", cam_maps.shape)
         
             masks, actual_lams = region_select.generate_mixing_masks(cam_maps, lam=0.7)
-            region_select.visualize_cam_with_bbox(input2, cam_maps, masks)
+            #region_select.visualize_cam_with_bbox(input2, cam_maps, masks)
             time1 = time.time()
             print('Total time to generate saliencys is: {:.2f} second'.format((time1-start)))  
   
@@ -720,153 +717,6 @@ def denormalize(image_batch,  means = [0.4914, 0.4822, 0.4465], stds = [0.2023, 
     means = torch.tensor(means).view(1, 3, 1, 1)
     stds = torch.tensor(stds).view(1, 3, 1, 1)
     return image_batch * stds + means
-
-#for ploting purposes, only take one image in the batch
-def saliency_visualisation(batch, saliencys):
-    imgs = denormalize(batch.cpu())
-    img = imgs[15].numpy()
-    img = np.transpose(img, (1, 2, 0)) # move color channel to last dimension
-
-    saliency = saliencys[15].squeeze(0)
-
-    saliency = cv2.resize(saliency, (32,32))
-    img = cv2.resize(img, (32,32))
-    #saliency = cv2.resize(saliency, (224, 224))
-
-    print(np.min(saliency))
-    print(np.max(saliency))
-
-    fig, ax = plt.subplots(1,3)
-    
-    img = img * 255
-
-    img_heatmap = my_utils.save_img_with_heatmap(img, saliency, None, style='zhou', normalise=True)
-    heatmap = my_utils.save_heatmap(saliency, None, normalise=True)
-
-    #add bouding box around ROI 
-    threshold = 0.5  
-    _, binary_saliency = cv2.threshold(saliency, threshold, 255, cv2.THRESH_BINARY) # Convert the saliency map to binary
-
-    # Convert binary_saliency to 8-bit image
-    binary_saliency = np.uint8(binary_saliency)
-
-    # Find contours in the binary image
-    contours, _ = cv2.findContours(binary_saliency, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    img_np = np.array(img).astype(np.uint8)
-    img_np = np.ascontiguousarray(img_np) # Make sure the array is contiguous for cv2.Rectangle
-
-    for contour in contours:
-        x, y, w, h = cv2.boundingRect(contour)
-        cv2.rectangle(img_np, (x, y), (x + w, y + h), (0, 255, 0), 2)
-
-    ax[0].imshow((img).astype(np.uint8))
-    ax[1].imshow((heatmap[:, :, ::-1]).astype(np.uint8))
-    ax[2].imshow((img_np).astype(np.uint8))
-    plt.axis('off')
-
-
-def getCountour(threshold, saliency):
-     #add bouding box around ROI 
-    saliency = saliency.squeeze(0)
-    _, binary_saliency = cv2.threshold(saliency, threshold, 255, cv2.THRESH_BINARY) # Convert the saliency map to binary
-
-    # Convert binary_saliency to 8-bit image
-    binary_saliency = np.uint8(binary_saliency)
-
-    # Find contours in the binary image
-    contours, _ = cv2.findContours(binary_saliency, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    '''
-    # For each contour, find the bounding rectangle and draw it on the original image
-    for contour in contours:
-        x, y, w, h = cv2.boundingRect(contour)
-        cv2.rectangle(img_np, (x, y), (x + w, y + h), (0, 255, 0), 2)
-    '''
-    if len(contours) == 0:
-        return 0, 0, 0, 0
-    
-    largest_contour = max(contours, key=cv2.contourArea)
-    # Compute the bounding box of the largest contour
-    x, y, w, h = cv2.boundingRect(largest_contour)
-    
-    bbx1=x 
-    bby1=y
-    bbx2=x+w
-    bby2=y+h 
-
-    return bbx1, bby1, bbx2, bby2
-
-def getCountourList(threshold, saliencys):
-    bbx1_list = []
-    bby1_list = []
-    bbx2_list = []
-    bby2_list = []
-    for saliency in saliencys:
-        bbx1, bby1, bbx2, bby2 = getCountour(threshold, saliency)
-        bbx1_list.append(bbx1)
-        bby1_list.append(bby1)
-        bbx2_list.append(bbx2)
-        bby2_list.append(bby2)
-    #create a list of bounding box coordinates, for each image in the batch, shape 32 by 4
-    bboxes = np.array([bbx1_list, bby1_list, bbx2_list, bby2_list]).T
-    return bboxes
-
-
-def crop_roi(image, bounding_box):
-    bbx1, bby1, bbx2, bby2 = bounding_box
-    return image[:, bbx1:bbx2, bby1:bby2]
-
-def augment_roi(roi):
-    """
-    Apply augmentations to the Region of Interest (ROI).
-    
-    Args:
-        roi (torch.Tensor): ROI with shape (C, H, W).
-    
-    Returns:
-        list of torch.Tensor: List of augmented ROIs, each with shape (C, H, W).
-    """
-    augmented_rois = []
-    
-    # Convert to OpenCV format: (H, W, C)
-    roi_np = roi.permute(1, 2, 0).cpu().numpy()
-
-    # Original ROI
-    augmented_rois.append(roi)
-    
-    # Scaling
-    scaled_roi = cv2.resize(roi_np, None, fx=1.2, fy=1.2, interpolation=cv2.INTER_LINEAR)
-    scaled_roi = cv2.resize(scaled_roi, (roi_np.shape[1], roi_np.shape[0]), interpolation=cv2.INTER_LINEAR)
-    scaled_roi = torch.tensor(scaled_roi).permute(2, 0, 1).float()
-    augmented_rois.append(scaled_roi)
-    
-    # Rotation
-    h, w, _ = roi_np.shape
-    center = (w // 2, h // 2)
-    rotation_matrix = cv2.getRotationMatrix2D(center, angle=45, scale=1.0)
-    rotated_roi = cv2.warpAffine(roi_np, rotation_matrix, (w, h))
-    rotated_roi = np.expand_dims(rotated_roi, axis=-1) if rotated_roi.ndim == 2 else rotated_roi
-    rotated_roi = torch.tensor(rotated_roi).permute(2, 0, 1).float()
-    augmented_rois.append(rotated_roi)
-    
-    # Horizontal Flipping
-    flipped_roi = cv2.flip(roi_np, 1)
-    flipped_roi = torch.tensor(flipped_roi).permute(2, 0, 1).float()
-    augmented_rois.append(flipped_roi)
-    
-    '''
-     # Debug and visualize each augmented ROI
-    for i, aug_roi in enumerate(augmented_rois):
-        plt.figure()
-        if isinstance(aug_roi, torch.Tensor):  # Handle PyTorch tensors
-            aug_roi = aug_roi.permute(1, 2, 0).cpu().numpy()
-        plt.imshow(aug_roi, cmap='gray' if aug_roi.ndim == 2 else None)
-        plt.title(f"Augmented ROI {i}")
-        plt.show()
-    '''    
-    return augmented_rois
-
 
 
 if __name__ == '__main__':

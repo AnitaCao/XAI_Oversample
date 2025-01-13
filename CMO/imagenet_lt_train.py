@@ -19,7 +19,7 @@ import warnings
 from util.util import *
 import util.moco_loader as moco_loader
 from util.randaugment import rand_augment_transform
-from imbalance_data.lt_data import LT_Dataset, Imb_Dataset, load_imb_imagenet
+from imbalance_data.lt_data import LT_Dataset
 #matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 import sys
@@ -361,7 +361,7 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, 
 
         input = input.cuda(args.gpu, non_blocking=True)
         target = target.cuda(args.gpu, non_blocking=True)
-        # Data augmentation
+       
         r = np.random.rand(1)
         #r = 0.01
         if args.cut_mix == 'CMO' and args.start_cut_mix < epoch < (args.epochs - args.end_cut_mix) and r < args.mixup_prob:
@@ -390,51 +390,28 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, 
             lam_list = []
             
             if args.data_aug:
-                #duplicate the input2 to make it 4 times for data augmentation
-                input2 = input2.repeat_interleave(4, dim=0)
-                mixed_samples = gradcam.generate_mixed_images_with_augmentation(input2, input, masks, types=['scale', 'rotate', 'flip'])
+                # get 6 batchs of images from trainloader to use as backgrounds
+                backgrounds = []
+                for j in range(6):
+                    batch = next(iter(train_loader))
+                    background = batch['img']
+                    if isinstance(background, list):
+                        # Convert nested list to tensor
+                        background = torch.stack([torch.stack([torch.stack(channel) for channel in img], dim=0) for img in background], dim=0).permute(3,0,1,2)
+                        background = background.float()
+                    backgrounds.append(background)
+                backgrounds = torch.cat(backgrounds, dim=0)
                 
-                input = input.repeat_interleave(4, dim=0)
-                target = target.repeat_interleave(4, dim=0)
+                mixed_imgs_list, lam_list = region_select.generate_mixed_images_with_augmentation(input2, backgrounds, masks, types=['scale', 'rotate', 'flip'])  
+                input = torch.stack(mixed_imgs_list, dim=0)
+                target = target.repeat_interleave(6, dim=0)
             else:
-                gradcam.apply_masks(input, masks)
-                
-                masks = torch.zeros_like(input)  # Create a zero mask for all images
-                for j in range(len(bboxes)):
-                    bbx1, bby1, bbx2, bby2 = bboxes[j]
-                    masks[j, :, bby1:bby2, bbx1:bbx2] = 1  # Set mask to 1 within the bounding box
-                    lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (input.size()[-1] * input.size()[-2]))
-                    lam_list.append(lam)
+                backgrounds = input
+                input, lam_list = region_select.generate_mixed_images_without_augmentation(input2, backgrounds, masks)
 
-            # Use the mask to blend input1 and input2
-            input = masks * input2 + (1 - masks) * input
             output = model(input)
             loss = criterion(output, target) * torch.tensor(lam_list).cuda(args.gpu) + criterion(output, target2) * (1. - torch.tensor(lam_list).cuda(args.gpu))
-            loss = loss.mean()
- 
-        elif args.cut_mix == 'CMO_XAI_MASK' and args.start_cut_mix < epoch < (
-            args.epochs - args.end_cut_mix) and r < args.mixup_prob:
-                        # generate mixed sample
-            lam = np.random.beta(args.beta, args.beta)
-            start = time.time()
-            saliencys, _ = gradcam(input2, None) 
-            
-            time1 = time.time()
-            print('Total time to generate saliencys is: {:.2f} second'.format((time1-start))) 
-
-            MASK_list, lam_list = XAI_MASK(saliencys, lam) # TODO: lam should be used as the threshold for the ROI, current threshold is 0.5
-            
-            # Convert refined_binary_masks to a torch tensor if it isn't already
-            MASK_list = torch.tensor(MASK_list, dtype=torch.float32).cuda(args.gpu)
-
-            input_ori = input.clone() # save the original input for display purposes
-
-            # Use the mask to blend input1 and input2
-            input = MASK_list * input2 + (1 - MASK_list) * input
-            output = model(input)
-            loss = criterion(output, target) * torch.tensor(lam_list).cuda(args.gpu) + criterion(output, target2) * (1. - torch.tensor(lam_list).cuda(args.gpu))
-            loss = loss.mean()
-          
+            loss = loss.mean()        
         elif args.cut_mix == 'CMO_OBJ_DET' and args.start_cut_mix< epoch < (
                 args.epochs - args.end_cut_mix) and r < args.mixup_prob:
             # generate mixed sample

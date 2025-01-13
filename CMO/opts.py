@@ -48,7 +48,7 @@ parser.add_argument('--wd', '--weight-decay', default=2e-4, type=float,
 
 # data augmentation setting
 parser.add_argument('--cut_mix', default="CMO_XAI", type=str, help='cut mix type',
-                    choices=('vanilla', 'CMO','CMO-XAI', 'CMO-MASK'))
+                    choices=('vanilla', 'CMO','CMO_XAI', 'CMO_MASK'))
 parser.add_argument('--mixup_prob', default=0.5, type=float, help='mixup probability')
 parser.add_argument('--start_cut_mix', default=3, type=int, help='start epoch for aug')
 parser.add_argument('--end_cut_mix', default=3, type=int, help='how many epochs to turn off aug')
