@@ -1,35 +1,50 @@
 # original code: https://github.com/kaidic/LDAM-DRW/blob/master/cifar_train.py
+import math
+import os
+import sys
 import random
 import time
+import datetime
+import numpy as np
+import torch
 import torch.nn as nn
 import torch.nn.parallel
 import torch.backends.cudnn as cudnn
 import torch.optim
 import torch.utils.data
 import torchvision.transforms as transforms
-from datasets import load_dataset
-import models
-import torchvision.models as torch_models
-from PIL import Image
-
-#from losses import LDAMLoss, BalancedSoftmaxLoss
-from losses import *
-from opts import parser
+import torchvision.models as models
+#from tensorboardX import SummaryWriter
+from imbalance_data.lt_data import LT_Dataset, Imb_Dataset, load_imb_imagenet
+from losses import LDAMLoss, BalancedSoftmaxLoss
 import warnings
+from torch.nn import Parameter
+import torch.nn.functional as F
 from util.util import *
-import util.moco_loader as moco_loader
 from util.randaugment import rand_augment_transform
-from imbalance_data.lt_data import LT_Dataset
+import util.moco_loader as moco_loader
+import matplotlib
 #matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
-import sys
 import cv2
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import my_utils
 import region_select
+from opts import parser
 
 
 best_acc1 = 0
+
+class NormedLinear(nn.Module):
+    def __init__(self, in_features, out_features):
+        super(NormedLinear, self).__init__()
+        self.weight = Parameter(torch.Tensor(in_features, out_features))
+        self.weight.data.uniform_(-1, 1).renorm_(2, 1, 1e-5).mul_(1e5)
+
+    def forward(self, x):
+        out = F.normalize(x, dim=1).mm(F.normalize(self.weight, dim=0))
+        return out
+
 
 def main():
     args = parser.parse_args()
@@ -62,32 +77,31 @@ def main_worker(gpu, ngpus_per_node, args):
     global best_acc1
     global train_cls_num_list
     global cls_num_list_cuda
-
     args.gpu = gpu
-    if args.gpu is not None:
-        print("Use GPU: {} for training".format(args.gpu))
-
+   
     # create model
     print("=> creating model '{}'".format(args.arch))
     num_classes = args.num_classes
-    use_norm = True if args.loss_type == 'LDAM' else False
-    model = models.__dict__[args.arch](num_classes=num_classes, use_norm=use_norm)
+    model = getattr(models, args.arch)(pretrained=False)
+    if args.num_classes == 10:
+        num_ftrs = model.fc.in_features
+        model.fc = nn.Linear(num_ftrs, num_classes)
+        
     print(model)
 
 
-    XAI_model = torch_models.resnet50(pretrained=True) # load a pretrained model for XAI heatmap generation
-    XAI_model.conv1 = torch.nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
-    num_ftrs = XAI_model.fc.in_features
-    XAI_model.fc = nn.Linear(num_ftrs, num_classes) 
-    print("XAI model: ", XAI_model) 
-    
-
-    XAI_model = XAI_model.cuda()
+    XAI_model = models.resnet50(pretrained=True) # load a pretrained model for XAI heatmap generation
+    XAI_model = XAI_model.cuda(args.gpu)
     XAI_model.eval()
     
     gc = region_select.GradCAM(XAI_model, target_layer='layer4')
     
+    if args.loss_type == 'LDAM':
+        num_ftrs = model.fc.in_features
+        model.fc = NormedLinear(num_ftrs, num_classes)
+    
     if args.gpu is not None:
+        print("Use GPU: {} for training".format(args.gpu))
         torch.cuda.set_device(args.gpu)
         model = model.cuda(args.gpu)
     else:
@@ -163,17 +177,18 @@ def main_worker(gpu, ngpus_per_node, args):
     if args.num_classes == 1000:
         print("Using ImageNet_LT dataset")
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        train_path = os.path.join(script_dir, 'ImageNet_LT', 'ImageNet_LT_train.txt')
-        val_path = os.path.join(script_dir, 'ImageNet_LT', 'ImageNet_LT_val.txt')
+        train_path = os.path.join(script_dir, 'imbalance_data', 'ImageNet_LT_train.txt')
+        val_path = os.path.join(script_dir, 'imbalance_data', 'ImageNet_LT_val.txt')
         train_dataset = LT_Dataset(args.root, train_path, transform_train,
                                use_randaug=args.use_randaug)
         val_dataset = LT_Dataset(args.root, val_path, transform_val)
         num_classes = len(np.unique(train_dataset.targets))
         assert num_classes == 1000
     else:
-        data_path = os.path.join(args.root, 'train')
-        train_dataset, val_dataset = load_imb_imagenet(data_path, transform_train, transform_val)
-        num_classes = len(np.unique(train_dataset.targets))
+        return
+        #data_path = os.path.join(args.root, 'train')
+        #train_dataset, val_dataset = load_imb_imagenet(data_path, transform_train, transform_val)
+        #num_classes = len(np.unique(train_dataset.targets))
 
     print("Number of classes: ", num_classes)
     print("Number of training samples: ", len(np.unique(val_dataset.targets)))
@@ -228,7 +243,7 @@ def main_worker(gpu, ngpus_per_node, args):
         print("weighted sampler testing finished")
         '''    
 
-    cls_num_list_cuda = torch.from_numpy(np.array(cls_num_list)).float().cuda()
+    cls_num_list_cuda = torch.from_numpy(np.array(cls_num_list)).float().cuda(args.gpu)
 
     # init log for training
     log_training = open(os.path.join(args.root_log, args.store_name, 'log_train.csv'), 'w')
@@ -329,38 +344,30 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, 
     if args.cut_mix.startswith('CMO') and args.start_cut_mix < epoch < (args.epochs - args.end_cut_mix):
         inverse_iter = iter(weighted_train_loader)
 
-    for i, batch in enumerate(train_loader):
-        input, target = batch['img'], batch['label']
-        
-        if isinstance(input, list):
-            # Convert nested list to tensor
-            input = torch.stack([torch.stack([torch.stack(channel) for channel in img], dim=0) for img in input], dim=0).permute(3,0,1,2)
-            input = input.float()
-        
-        if args.cut_mix.startswith('CMO') and args.start_cut_mix < epoch < (args.epochs - args.end_cut_mix):
+    for i, (input, target) in enumerate(train_loader):
+        if args.cut_mix.startswith('CMO') and args.start_cut_mix < epoch < (
+                args.epochs - args.end_cut_mix):
             try:
-                batch2 = next(inverse_iter) #minority samples
-                input2, target2 = batch2['img'], batch2['label']
+                input2, target2 = next(weighted_train_loader) 
             except:
-                inverse_iter = iter(weighted_train_loader)
-                batch2 = next(inverse_iter)
-                input2, target2 = batch2['img'], batch2['label']
-                
-            if isinstance(input2, list):
-            # Convert nested list to tensor
-                input2 = torch.stack([torch.stack([torch.stack(channel) for channel in img], dim=0) for img in input2], dim=0).permute(3,0,1,2)
-                input2 = input2.float()
-            
-            input2 = input2[:input.size()[0]]
-            target2 = target2[:target.size()[0]]
+                weighted_train_loader = iter(weighted_train_loader)
+                input2, target2 = next(weighted_train_loader)
+            input2 = input2[:input.size()[0]] # make sure the batch size is the same
+            target2 = target2[:target.size()[0]] # make sure the batch size is the same
             input2 = input2.cuda(args.gpu, non_blocking=True)
             target2 = target2.cuda(args.gpu, non_blocking=True)
 
         # measure data loading time
         data_time.update(time.time() - end)
 
-        input = input.cuda(args.gpu, non_blocking=True)
-        target = target.cuda(args.gpu, non_blocking=True)
+        #input = input.cuda(args.gpu, non_blocking=True)
+        #target = target.cuda(args.gpu, non_blocking=True)
+
+        # measure data loading time
+        data_time.update(time.time() - end)
+
+        #input = input.cuda(args.gpu, non_blocking=True)
+        #target = target.cuda(args.gpu, non_blocking=True)
        
         r = np.random.rand(1)
         #r = 0.01
@@ -381,8 +388,8 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, 
             lam = np.random.beta(args.beta, args.beta)
             start = time.time()
             
-            cam_maps, probs = gradcam.grad_cam(input2)
-            masks, actual_lams = gradcam.generate_mixing_masks(cam_maps, lam=0.7)
+            cam_maps, probs = gradcam(input2)
+            masks, actual_lams = region_select.generate_mixing_masks(cam_maps, lam=0.7)
 
             time1 = time.time()
    
@@ -394,7 +401,7 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, 
                 backgrounds = []
                 for j in range(6):
                     batch = next(iter(train_loader))
-                    background = batch['img']
+                    background = batch[0]
                     if isinstance(background, list):
                         # Convert nested list to tensor
                         background = torch.stack([torch.stack([torch.stack(channel) for channel in img], dim=0) for img in background], dim=0).permute(3,0,1,2)
@@ -405,10 +412,15 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, 
                 mixed_imgs_list, lam_list = region_select.generate_mixed_images_with_augmentation(input2, backgrounds, masks, types=['scale', 'rotate', 'flip'])  
                 input = torch.stack(mixed_imgs_list, dim=0)
                 target = target.repeat_interleave(6, dim=0)
+                
             else:
                 backgrounds = input
                 input, lam_list = region_select.generate_mixed_images_without_augmentation(input2, backgrounds, masks)
 
+
+            input = input.cuda(args.gpu, non_blocking=True)
+            target = target.cuda(args.gpu, non_blocking=True)
+        
             output = model(input)
             loss = criterion(output, target) * torch.tensor(lam_list).cuda(args.gpu) + criterion(output, target2) * (1. - torch.tensor(lam_list).cuda(args.gpu))
             loss = loss.mean()        
@@ -424,6 +436,8 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, 
                 #before mixing with the background
                 print("Data augmentation for the selected region of the foreground")
         else:
+            input = input.cuda(args.gpu, non_blocking=True)
+            target = target.cuda(args.gpu, non_blocking=True)
             output = model(input) #output.size() = [128, 10], 128 is batch size, 10 is number of classes
             loss = criterion(output, target)
 
