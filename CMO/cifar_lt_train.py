@@ -25,7 +25,7 @@ import sys
 import cv2
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import my_utils
-import region_select
+import region_select_copy as region_select
 
 
 
@@ -93,7 +93,7 @@ def main_worker(gpu, ngpus_per_node, args):
     XAI_model.fc = nn.Linear(num_ftrs, num_classes) 
     print("XAI model: ", XAI_model) 
 
-    XAI_model = XAI_model.cuda()
+    XAI_model = XAI_model.cuda(args.gpu)
     XAI_model.eval()
     
     gc = region_select.GradCAM(XAI_model, 'layer4')
@@ -240,7 +240,7 @@ def main_worker(gpu, ngpus_per_node, args):
         print("weighted sampler testing finished")
         '''    
 
-    cls_num_list_cuda = torch.from_numpy(np.array(cls_num_list)).float().cuda()
+    cls_num_list_cuda = torch.from_numpy(np.array(cls_num_list)).float().cuda(args.gpu)
 
     # init log for training
     log_training = open(os.path.join(args.root_log, args.store_name, 'log_train.csv'), 'w')
@@ -416,24 +416,30 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, 
             if args.data_aug:
                 # get 6 batchs of images from trainloader to use as backgrounds
                 backgrounds = []
+                backgrouds_labels = []
                 for j in range(6):
                     batch = next(iter(train_loader))
                     background = batch['img']
+                    b_labels = batch['label']
                     if isinstance(background, list):
                         # Convert nested list to tensor
                         background = torch.stack([torch.stack([torch.stack(channel) for channel in img], dim=0) for img in background], dim=0).permute(3,0,1,2)
                         background = background.float()
                     backgrounds.append(background)
+                    backgrouds_labels.append(b_labels)
                 backgrounds = torch.cat(backgrounds, dim=0)
+                backgrouds_labels = torch.cat(backgrouds_labels, dim=0)
                 
                 mixed_imgs_list, lam_list = region_select.generate_mixed_images_with_augmentation(input2, backgrounds, masks, types=['scale', 'rotate', 'flip'])  
                     
                 #print(f"Mixed images list length: {len(mixed_imgs_list)}")
                 #print(f"First mixed image shape: {mixed_imgs_list[0].shape}")
                 
-                input = torch.stack(mixed_imgs_list, dim=0)
+                input = torch.stack(mixed_imgs_list, dim=0).cuda(args.gpu, non_blocking=True)
         
-                target = target.repeat_interleave(6, dim=0)
+                #target = target.repeat_interleave(6, dim=0)
+                target = backgrouds_labels.cuda(args.gpu, non_blocking=True)
+                target2 = target2.repeat_interleave(6, dim=0).cuda(args.gpu, non_blocking=True)
                 #print("Generated input type: ", type(input))
                 #print("Generated tensor shape: ", input.shape) #torch.Size([288, 224, 224])
                 
@@ -442,7 +448,7 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, 
                 backgrounds = input
                 input, lam_list = region_select.generate_mixed_images_without_augmentation(input2, backgrounds, masks)
 
-            output = model(input)
+            output = model(input.cuda(args.gpu, non_blocking=True))
             loss = criterion(output, target) * torch.tensor(lam_list).cuda(args.gpu) + criterion(output, target2) * (1. - torch.tensor(lam_list).cuda(args.gpu))
             loss = loss.mean()
             #print("just for testing purposes: CMO+XAI mixup images: ")

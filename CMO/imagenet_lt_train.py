@@ -29,7 +29,7 @@ import matplotlib.pyplot as plt
 import cv2
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import my_utils
-import region_select
+import region_select_copy as region_select
 from opts import parser
 
 
@@ -348,10 +348,11 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, 
         if args.cut_mix.startswith('CMO') and args.start_cut_mix < epoch < (
                 args.epochs - args.end_cut_mix):
             try:
-                input2, target2 = next(weighted_train_loader) 
+                input2, target2 = next(inverse_iter) 
             except:
-                weighted_train_loader = iter(weighted_train_loader)
-                input2, target2 = next(weighted_train_loader)
+                inverse_iter = iter(weighted_train_loader)
+                input2, target2 = next(inverse_iter)
+                
             input2 = input2[:input.size()[0]] # make sure the batch size is the same
             target2 = target2[:target.size()[0]] # make sure the batch size is the same
             input2 = input2.cuda(args.gpu, non_blocking=True)
@@ -366,8 +367,8 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, 
         # measure data loading time
         data_time.update(time.time() - end)
 
-        #input = input.cuda(args.gpu, non_blocking=True)
-        #target = target.cuda(args.gpu, non_blocking=True)
+        input = input.cuda(args.gpu, non_blocking=True)
+        target = target.cuda(args.gpu, non_blocking=True)
        
         r = np.random.rand(1)
         #r = 0.01
@@ -399,19 +400,27 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, 
             if args.data_aug:
                 # get 6 batchs of images from trainloader to use as backgrounds
                 backgrounds = []
+                backgrounds_labels = []
                 for j in range(6):
                     batch = next(iter(train_loader))
-                    background = batch[0]
-                    if isinstance(background, list):
+                    b_imgs = batch[0]
+                    b_labels = batch[1]
+                    if isinstance(b_imgs, list):
                         # Convert nested list to tensor
-                        background = torch.stack([torch.stack([torch.stack(channel) for channel in img], dim=0) for img in background], dim=0).permute(3,0,1,2)
-                        background = background.float()
-                    backgrounds.append(background)
+                        b_imgs = torch.stack([torch.stack([torch.stack(channel) for channel in img], dim=0) for img in background], dim=0).permute(3,0,1,2)
+                        b_imgs = b_imgs.float()
+                    backgrounds.append(b_imgs)
+                    backgrounds_labels.append(b_labels)
+                    
                 backgrounds = torch.cat(backgrounds, dim=0)
+                backgrounds_labels = torch.cat(backgrounds_labels,dim=0)
                 
                 mixed_imgs_list, lam_list = region_select.generate_mixed_images_with_augmentation(input2, backgrounds, masks, types=['scale', 'rotate', 'flip'])  
-                input = torch.stack(mixed_imgs_list, dim=0)
-                target = target.repeat_interleave(6, dim=0)
+                
+                input = torch.stack(mixed_imgs_list, dim=0).cuda(args.gpu, non_blocking=True)
+                
+                target = backgrounds_labels.cuda(args.gpu, non_blocking=True)  #background labels
+                target2 = target2.repeat_interleave(6, dim=0).cuda(args.gpu, non_blocking=True)  #foreground labels
                 
             else:
                 backgrounds = input
@@ -419,7 +428,6 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, 
 
 
             input = input.cuda(args.gpu, non_blocking=True)
-            target = target.cuda(args.gpu, non_blocking=True)
         
             output = model(input)
             loss = criterion(output, target) * torch.tensor(lam_list).cuda(args.gpu) + criterion(output, target2) * (1. - torch.tensor(lam_list).cuda(args.gpu))
@@ -523,7 +531,7 @@ def validate(val_loader, model, criterion, epoch, args, log=None, flag='val'):
     with torch.no_grad():
         end = time.time()
         for i, batch in enumerate(val_loader):
-            input, target = batch['img'], batch['label']
+            input, target = batch[0], batch[1]
         
             if isinstance(input, list):
                 # Convert nested list to tensor
