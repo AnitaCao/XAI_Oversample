@@ -403,11 +403,11 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, 
                 backgrounds_labels = []
                 for j in range(6):
                     batch = next(iter(train_loader))
-                    b_imgs = batch[0]
-                    b_labels = batch[1]
+                    b_imgs = batch[0][:input.size()[0]]
+                    b_labels = batch[1][:input.size()[0]]
                     if isinstance(b_imgs, list):
                         # Convert nested list to tensor
-                        b_imgs = torch.stack([torch.stack([torch.stack(channel) for channel in img], dim=0) for img in background], dim=0).permute(3,0,1,2)
+                        b_imgs = torch.stack([torch.stack([torch.stack(channel) for channel in img], dim=0) for img in b_imgs], dim=0).permute(3,0,1,2)
                         b_imgs = b_imgs.float()
                     backgrounds.append(b_imgs)
                     backgrounds_labels.append(b_labels)

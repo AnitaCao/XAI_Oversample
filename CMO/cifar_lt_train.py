@@ -194,11 +194,12 @@ def main_worker(gpu, ngpus_per_node, args):
     print("total number of samples: ", sum(cls_num_list)) #total number of samples:  12006 for cifar10_lt or 19573 for cifar100_lt
     args.cls_num_list = cls_num_list
     train_cls_num_list = np.array(cls_num_list) 
+    
+    toy_dataset = train_dataset.select(range(100))  # Select the first 100 samples
 
-    train_dataset = val_dataset.map(lambda x: {'img': transform_train(Image.fromarray(np.array(x['img']))), 'label': x[label_name]}, batched=False)
+    train_dataset = train_dataset.map(lambda x: {'img': transform_train(Image.fromarray(np.array(x['img']))), 'label': x[label_name]}, batched=False)
     val_dataset = val_dataset.map(lambda x: {'img': transform_val(Image.fromarray(np.array(x['img']))), 'label': x[label_name]}, batched=False)
     
-
     train_sampler = None
 
     train_loader = torch.utils.data.DataLoader(
@@ -419,8 +420,9 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, 
                 backgrouds_labels = []
                 for j in range(6):
                     batch = next(iter(train_loader))
-                    background = batch['img']
-                    b_labels = batch['label']
+                    #make sure batch size is the same as the input size
+                    background = batch['img'][:input.size()[0]]
+                    b_labels = batch['label'][:input.size()[0]]
                     if isinstance(background, list):
                         # Convert nested list to tensor
                         background = torch.stack([torch.stack([torch.stack(channel) for channel in img], dim=0) for img in background], dim=0).permute(3,0,1,2)
@@ -449,6 +451,12 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, 
                 input, lam_list = region_select.generate_mixed_images_without_augmentation(input2, backgrounds, masks)
 
             output = model(input.cuda(args.gpu, non_blocking=True))
+            if output.size(0) != target.size(0):
+                print("Output size: ", output.size())
+                print("Target size: ", target.size())
+            if output.size(0) != target2.size(0):
+                print("Output size: ", output.size())
+                print("Target2 size: ", target2.size())
             loss = criterion(output, target) * torch.tensor(lam_list).cuda(args.gpu) + criterion(output, target2) * (1. - torch.tensor(lam_list).cuda(args.gpu))
             loss = loss.mean()
             #print("just for testing purposes: CMO+XAI mixup images: ")
