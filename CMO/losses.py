@@ -67,9 +67,6 @@ class BalancedSoftmaxLoss(nn.Module):
         # print(f'Use BalancedSoftmaxLoss, class_prior: {cls_prior}')
 
     def forward(self, logits, labels):
-        if logits.size(0) == 6*labels.size(0):
-            labels = labels.repeat_interleave(6, 0)
         adjusted_logits = logits + self.log_prior
         label_loss = F.cross_entropy(adjusted_logits, labels)
-
         return label_loss
