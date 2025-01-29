@@ -20,11 +20,11 @@ def str2bool(v):
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
 parser = argparse.ArgumentParser(description='PyTorch Cifar Training')
-parser.add_argument('--root', default='./data/', help='dataset setting')
-parser.add_argument('--dataset', default='cifar', help='dataset setting', choices=('cifar100', 'Imagenet-LT', 'iNat18')
+parser.add_argument('--root', default='./ILSVRC/Data/CLS-LOC', help='dataset setting')
+parser.add_argument('--dataset', default='Imagenet-LT', help='dataset setting', choices=('cifar100-LT', 'Imagenet-LT', 'iNat18', 'cifar10-LT')
 )
-parser.add_argument('-a', '--arch', metavar='ARCH', default='resnet32')
-parser.add_argument('--num_classes', default=100, type=int, help='number of classes ')
+parser.add_argument('-a', '--arch', metavar='ARCH', default='resnet50')
+parser.add_argument('--num_classes', default=1000, type=int, help='number of classes ')
 parser.add_argument('--imb_factor', default=0.01, type=float, help='imbalance factor')
 parser.add_argument('--rand_number', default=0, type=int, help='fix random number for data sampling')
 
@@ -47,16 +47,16 @@ parser.add_argument('--wd', '--weight-decay', default=2e-4, type=float,
                     dest='weight_decay')
 
 # data augmentation setting
-parser.add_argument('--cut_mix', default="CMO_XAI", type=str, help='cut mix type',
-                    choices=('vanilla', 'CMO','CMO_XAI', 'CMO_MASK'))
+parser.add_argument('--cut_mix', default="CMO_OBJ", type=str, help='cut mix type',
+                    choices=('vanilla', 'CMO','CMO_XAI', 'CMO_MASK', "CMO_OBJ"))
 parser.add_argument('--mixup_prob', default=0.5, type=float, help='mixup probability')
-parser.add_argument('--start_cut_mix', default=3, type=int, help='start epoch for aug')
+parser.add_argument('--start_cut_mix', default=-1, type=int, help='start epoch for aug')
 parser.add_argument('--end_cut_mix', default=3, type=int, help='how many epochs to turn off aug')
 parser.add_argument('--weighted_alpha', default=1, type=float, help='weighted alpha for sampling probability (q(1,k))')
 parser.add_argument('--beta', default=1, type=float, help='hyperparam for beta distribution')
 parser.add_argument('--use_randaug', action='store_true')
 parser.add_argument('--sample_method', default= 'freqeuncy', type=str, help='how to select backgroud pic',choices=('topological','freqeuncy')) 
-parser.add_argument('--data_aug', default= True, type=bool, help='augment the selected region of the foreground before mixing with the background')
+parser.add_argument('--data_aug', default= False, type=bool, help='augment the selected region of the foreground before mixing with the background')
 
 # etc.
 parser.add_argument('--exp_str', default='0', type=str, help='number to indicate which experiment it is')

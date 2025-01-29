@@ -9,18 +9,19 @@ import matplotlib.pyplot as plt
 import os
 from datasets import load_dataset
 
+import torchvision.transforms.functional as TF
+
 class GradCAM:
     def __init__(self, model, target_layer='layer4'):
         self.model = model.eval()
         self.gradients = None
         self.activations = None
-        self.handles = []
         
         # Register hooks
         for name, module in self.model.named_modules():
             if name == target_layer:
-                self.handles.append(module.register_forward_hook(self._forward_hook))
-                self.handles.append(module.register_backward_hook(self._backward_hook))
+                module.register_forward_hook(self._forward_hook)
+                module.register_full_backward_hook(self._backward_hook)  # Use full backward hook for robustness
                 break
     
     def _forward_hook(self, module, input, output):
@@ -50,9 +51,10 @@ class GradCAM:
         if class_idx is None:
             class_idx = logits.max(1)[-1]
             
-        self.model.zero_grad()
-        one_hot = torch.zeros_like(logits)
+        
+        one_hot = torch.zeros_like(logits, device=x.device)
         one_hot[torch.arange(batch_size), class_idx] = 1
+        self.model.zero_grad()
         logits.backward(gradient=one_hot, retain_graph=True)
         
         weights = F.adaptive_avg_pool2d(self.gradients, 1)
@@ -60,7 +62,7 @@ class GradCAM:
         cam = F.relu(cam)
         
         # Resize CAM to original input size
-        cam = F.interpolate(cam, size=x.shape[-2:], mode='bilinear', align_corners=False)
+        cam = F.interpolate(cam, size=(x.shape[2], x.shape[3]), mode='bilinear', align_corners=False)
         
         # Normalize each CAM independently
         cam = cam.view(batch_size, -1)
@@ -74,31 +76,29 @@ class GradCAM:
     def __call__(self, x, class_idx=None):
         return self.get_cam(x, class_idx)
 
-def generate_mixing_masks(cam_maps, lam):
-    """Generate binary masks from CAM maps"""
-    cam_maps = cam_maps.cpu().numpy()
-    batch_size = cam_maps.shape[0]
-    masks = []
-    actual_lams = []
+@torch.jit.script
+def generate_mixing_masks(cam_maps: torch.Tensor, lam: float):
+    """
+    Generate binary masks from CAM maps using vectorized operations.
     
+    Args:
+        cam_maps: (B, 1, H, W) tensor of CAM activation maps
+        lam: target lambda value for mixing ratio
+    
+    Returns:
+        masks: (B, 1, H, W) binary masks
+        actual_lams: (B,) actual lambda values after masking
+    """
     threshold = 1 - lam
     
-    for i in range(batch_size):
-        cam = cam_maps[i, 0]
-        cam = cv2.GaussianBlur(cam, (5, 5), 0)
-        mask = (cam > threshold).astype(np.float32)
-        
-        # Refinement
-        kernel = np.ones((5,5), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-        
-        actual_lam = 1 - mask.mean()
-        masks.append(mask)
-        actual_lams.append(actual_lam)
+    # Smooth CAM maps using efficient convolution
+    cam_maps = F.avg_pool2d(cam_maps, kernel_size=5, stride=1, padding=2)
     
-    masks = torch.FloatTensor(masks).unsqueeze(1).cuda()
-    actual_lams = torch.FloatTensor(actual_lams).cuda()
+    # Generate masks in one operation
+    masks = (cam_maps > threshold).float()
+    
+    # Compute actual lambdas using vectorized operations
+    actual_lams = 1 - masks.flatten(1).mean(dim=1)
     
     return masks, actual_lams
 
@@ -282,132 +282,33 @@ def create_test_batch(image_paths, is_cifar=False):
     batch_tensor = torch.stack(batch).cuda()
     return batch_tensor
 
-"""
-def augment_roi(roi, augmentation_types=None):
-    if augmentation_types is None:
-        augmentation_types = ['all']
-        
-    augmented_rois = []
-    # Convert to OpenCV format: (H, W, C)
-    roi_np = roi.permute(1, 2, 0).cpu().numpy()
-    h, w, _ = roi_np.shape
 
-    # Original ROI
-    augmented_rois.append(roi)
-    
-    if 'scale' in augmentation_types or 'all' in augmentation_types:
-        # Multiple scales
-        for scale in [0.8, 1.2]:
-            scaled_size = (int(w * scale), int(h * scale))
-            scaled_roi = cv2.resize(roi_np, scaled_size, interpolation=cv2.INTER_LINEAR)
-            # Resize back to original size
-            scaled_roi = cv2.resize(scaled_roi, (w, h), interpolation=cv2.INTER_LINEAR)
-            scaled_roi = torch.from_numpy(scaled_roi).permute(2, 0, 1).float().cuda()
-            augmented_rois.append(scaled_roi)
-    
-    if 'rotate' in augmentation_types or 'all' in augmentation_types:
-        # Multiple rotation angles
-        center = (w // 2, h // 2)
-        for angle in [-30, 30]:  # Less extreme angles
-            rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
-            rotated_roi = cv2.warpAffine(roi_np, rotation_matrix, (w, h), 
-                                       borderMode=cv2.BORDER_REFLECT)
-            rotated_roi = torch.from_numpy(rotated_roi).permute(2, 0, 1).float().cuda()
-            augmented_rois.append(rotated_roi)
-    
-    if 'flip' in augmentation_types or 'all' in augmentation_types:
-        # Horizontal flip
-        flipped_roi = cv2.flip(roi_np, 1)
-        flipped_roi = torch.from_numpy(flipped_roi).permute(2, 0, 1).float().cuda()
-        augmented_rois.append(flipped_roi)
-    
-    return augmented_rois
-
-def mix_with_augmented_roi(image, backgrounds, bbox, augmented_rois):
-    augmented_images = []
-    x1, y1, x2, y2 = bbox
-    
-    # Check if we have enough backgrounds
-    assert len(backgrounds) >= len(augmented_rois), \
-        f"Need at least {len(augmented_rois)} backgrounds, but only got {len(backgrounds)}"
-    
-    for idx, aug_roi in enumerate(augmented_rois):
-        # Use a different background for each augmented ROI
-        new_image = backgrounds[idx].clone()
-        # Replace the ROI region with augmented version
-        new_image[:, y1:y2, x1:x2] = aug_roi
-        augmented_images.append(new_image)
-    
-    return augmented_images
-
-"""
 
 def augment_roi(roi, augmentation_types=None):
-
-    if augmentation_types is None:
-        augmentation_types = ['all']
-        
-    augmented_rois = []
-    roi_np = roi.permute(1, 2, 0).cpu().numpy()
-    h, w, _ = roi_np.shape
-
-    # Original ROI
-    augmented_rois.append(roi)
+    augmented_rois = [roi]
     
-    if 'scale' in augmentation_types or 'all' in augmentation_types:
+    if augmentation_types is None or 'scale' in augmentation_types:
         for scale in [0.8, 1.2]:
-            scaled_size = (int(w * scale), int(h * scale))
-            scaled_roi = cv2.resize(roi_np, scaled_size, interpolation=cv2.INTER_LINEAR)
-            scaled_roi = torch.from_numpy(scaled_roi).permute(2, 0, 1).float().cuda()
-            augmented_rois.append(scaled_roi)
+            roi_rescaled = TF.resize(roi, size=(int(roi.size(1) * scale), int(roi.size(2) * scale)))
+            augmented_rois.append(roi_rescaled)
     
-    """
-    if 'rotate' in augmentation_types or 'all' in augmentation_types:
+    if augmentation_types is None or 'rotate' in augmentation_types:
         for angle in [-30, 30]:
-            # Calculate new dimensions needed for rotation
-            radian = abs(angle) * np.pi / 180
-            new_w = int(abs(w * np.cos(radian)) + abs(h * np.sin(radian)))
-            new_h = int(abs(h * np.cos(radian)) + abs(w * np.sin(radian)))
-            
-            # Create rotation matrix around center of new dimensions
-            center = (new_w // 2, new_h // 2)
-            
-            # Create new image with padding to accommodate rotation
-            padded_roi = np.zeros((new_h, new_w, 3), dtype=roi_np.dtype)
-            
-            # Calculate where to paste original image
-            x_offset = (new_w - w) // 2
-            y_offset = (new_h - h) // 2
-            padded_roi[y_offset:y_offset+h, x_offset:x_offset+w] = roi_np
-            
-            # Perform rotation
-            rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
-            rotated_roi = cv2.warpAffine(padded_roi, rotation_matrix, (new_w, new_h),
-                                       borderMode=cv2.BORDER_REFLECT)
-            
-            rotated_roi = torch.from_numpy(rotated_roi).permute(2, 0, 1).float().cuda()
-            augmented_rois.append(rotated_roi)
-    """
-    if 'rotate' in augmentation_types or 'all' in augmentation_types:
-        # Multiple rotation angles
-        center = (w // 2, h // 2)
-        for angle in [-30, 30]:  # Less extreme angles
-            rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
-            rotated_roi = cv2.warpAffine(roi_np, rotation_matrix, (w, h), 
-                                       borderMode=cv2.BORDER_REFLECT)
-            rotated_roi = torch.from_numpy(rotated_roi).permute(2, 0, 1).float().cuda()
-            augmented_rois.append(rotated_roi)
+            roi_rotated = TF.rotate(roi, angle)
+            augmented_rois.append(roi_rotated)
     
-    if 'flip' in augmentation_types or 'all' in augmentation_types:
-        flipped_roi = cv2.flip(roi_np, 1)
-        flipped_roi = torch.from_numpy(flipped_roi).permute(2, 0, 1).float().cuda()
-        augmented_rois.append(flipped_roi)
+    if augmentation_types is None or 'flip' in augmentation_types:
+        roi_flipped = TF.hflip(roi)
+        augmented_rois.append(roi_flipped)
     
     return augmented_rois
 
-def mix_with_augmented_roi(image, backgrounds, bbox, augmented_rois):
+# Mix augmented ROIs with different backgrounds
+
+def mix_with_augmented_roi(backgrounds, bbox, augmented_rois):
 
     augmented_images = []
+    lam_list = []
     x1, y1, x2, y2 = bbox
     original_w = x2 - x1
     original_h = y2 - y1
@@ -439,8 +340,17 @@ def mix_with_augmented_roi(image, backgrounds, bbox, augmented_rois):
             new_image[:, y1:y2, x1:x2] = aug_roi
             
         augmented_images.append(new_image)
+        
+        # Calculate lambda: scaling factor affects the ROI area
+        scaling_factor = (roi_h * roi_w) / (original_h * original_w)
+        original_foreground_area = original_h * original_w
+        scaled_foreground_area = scaling_factor * original_foreground_area
+        
+        total_area = new_image.shape[1] * new_image.shape[2]  # H * W of the background
+        lam = scaled_foreground_area / total_area
+        lam_list.append(lam)
     
-    return augmented_images
+    return augmented_images, lam_list
 
 
 def visualize_augmented_results(original_image, augmented_images, bbox):
@@ -456,11 +366,11 @@ def visualize_augmented_results(original_image, augmented_images, bbox):
     fig, axes = plt.subplots(1, num_images, figsize=(4*num_images, 4))
     
     # Denormalize images
-    mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1).cuda()
-    std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1).cuda()
+    mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+    std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
     
     # Show original image
-    img = original_image * std + mean
+    img = original_image.cpu() * std + mean
     img = img.permute(1, 2, 0).cpu().numpy()
     axes[0].imshow(np.clip(img, 0, 1))
     axes[0].add_patch(plt.Rectangle((bbox[0], bbox[1]), 
@@ -480,67 +390,144 @@ def visualize_augmented_results(original_image, augmented_images, bbox):
         axes[i+1].set_title(f'Augmented {i+1}')
         axes[i+1].axis('off')
     
-    plt.tight_layout()
+    plt.tight_layout()    
+    save_path = "plots_from_xai_cmo_augmentation.png"
+    plt.savefig(save_path, bbox_inches='tight', dpi=300)
+    print(f"Figure saved to {save_path}")
+    
     plt.show()
 
 def generate_mixed_images_with_augmentation(images, backgrounds, masks, types=['scale', 'rotate', 'flip']):
     """
-    Process images with augmentation and mixing.
+    Process images with augmentation and mixing efficiently.
     
     Args:
-        images (torch.Tensor): Input images (N, C, H, W)
-        backgrounds (torch.Tensor): Background images (N * num_augs, C, H, W)
-        masks (torch.Tensor): Mixing masks (N, 1, H, W)
-        types (list): List of augmentation types to apply
+        images (torch.Tensor): Input images (N, C, H, W).
+        backgrounds (torch.Tensor): Background images (N * num_augs, C, H, W).
+        masks (torch.Tensor): Mixing masks (N, 1, H, W).
+        types (list): List of augmentation types to apply.
+    
+    Returns:
+        mixed_images: List of mixed images.
+        lam_list: List of lambda values representing the ratio of the foreground region to the whole image.
     """
+    device = images.device
+    num_augs_per_image = 6  # Augmentation types
+    batch_size, _, img_h, img_w = images.size()
     augmented_images = []
-    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-    
-    # Calculate number of augmentations per image
-    num_augs_per_image = 6  # 1 original + 2 scales + 2 rotations + 1 flip
-    
-    # Process each image in the batch
-    for idx in range(len(images)):
-        # Get mask for current image
-        mask = masks[idx, 0].cpu().numpy()
-        
-        # Calculate background slice indices for this image
+    lam_list = []
+
+    # Ensure the number of backgrounds matches the required number
+    required_backgrounds = num_augs_per_image * batch_size
+    if len(backgrounds) < required_backgrounds:
+        indices = torch.randint(0, len(backgrounds), (required_backgrounds - len(backgrounds),))
+        backgrounds = torch.cat([backgrounds, backgrounds[indices]], dim=0)
+
+    # Precompute bounding boxes and ROIs for all images
+    bboxes = [get_bounding_box_from_mask(mask[0].cpu().numpy()) for mask in masks]
+    valid_indices = [i for i, bbox in enumerate(bboxes) if bbox is not None]
+    bboxes = [bboxes[i] for i in valid_indices]
+    images = images[valid_indices]
+    masks = masks[valid_indices]
+
+    for idx, (image, bbox) in enumerate(zip(images, bboxes)):
+        x1, y1, x2, y2 = bbox
+        roi = image[:, y1:y2, x1:x2]
+
+        # Augment the ROI in batch
+        augmented_rois = augment_roi(roi, types)
+
+        # Select corresponding backgrounds
         bg_start = idx * num_augs_per_image
         bg_end = (idx + 1) * num_augs_per_image
-        
-        # Get corresponding backgrounds for this image
         image_backgrounds = backgrounds[bg_start:bg_end]
+
+        # Mix augmented ROIs with backgrounds
+        mixed_images, lam_values = mix_with_augmented_roi(image_backgrounds, bbox, augmented_rois)
+
+        augmented_images.extend(mixed_images)
+        lam_list.extend(lam_values)
+        # Visualize results
+        #visualize_augmented_results(image.to(device), mixed_images, bbox)
+        #print(f"Processed image {idx+1}: ROI shape {roi.shape}, Generated {len(augmented_rois)} augmentations")
+
+    return augmented_images, lam_list
+
+
+def generate_mixed_images_without_augmentation(images, backgrounds, masks):
+    """
+    Generate mixed images without applying augmentations in a 1-to-1 manner.
     
-        # Get bounding box
+    Args:
+        images (torch.Tensor): Input images (N, C, H, W).
+        backgrounds (torch.Tensor): Background images (N, C, H, W).
+        masks (torch.Tensor): Binary masks (N, 1, H, W).
+    
+    Returns:
+        mixed_images: List of mixed images (N).
+        lam_list: List of lambda values representing the ratio of the foreground region to the whole background image.
+    """
+    mixed_images = []
+    lam_list = []
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+
+    # Iterate over each image, background, and mask
+    for idx in range(len(images)):
+        # Get the mask for the current image
+        mask = masks[idx, 0].cpu().numpy()
+        
+        # Extract the bounding box from the mask
         bbox = get_bounding_box_from_mask(mask)
         if bbox is not None:
-            # Get ROI
             x1, y1, x2, y2 = bbox
+            
+            # Extract ROI from the original image
             roi = images[idx, :, y1:y2, x1:x2]
             
-            # Generate augmented ROIs
-            augmented_rois = augment_roi(roi, types)
+            # Clone the corresponding background
+            new_image = backgrounds[idx].clone()
             
-            # Apply augmented ROIs to different background images
-            mixed_images = mix_with_augmented_roi(
-                images[idx], 
-                image_backgrounds, 
-                bbox, 
-                augmented_rois
-            )
+            # Insert the ROI into the background
+            new_image[:, y1:y2, x1:x2] = roi
             
-            # Move augmented images to cuda
-            mixed_images = [img.to(device) for img in mixed_images]
+            # Compute the foreground region area
+            foreground_area = (y2 - y1) * (x2 - x1)
             
-            augmented_images.extend(mixed_images)
-        
-            # Visualize results
-            visualize_augmented_results(images[idx].to(device), mixed_images, bbox)
-            print(f"Processed image {idx+1}: ROI shape {roi.shape}, Generated {len(augmented_rois)} augmentations")
+            # Compute the total background area
+            total_area = new_image.size(1) * new_image.size(2)  # H * W
+            
+            # Compute lambda: foreground area / total area
+            lam = foreground_area / total_area
+            lam_list.append(lam)
+            
+            # Add the mixed image to the list
+            mixed_images.append(new_image.to(device))
         else:
             print(f"No valid bounding box found for image {idx+1}")
-            
-    return augmented_images
+    
+    return mixed_images, lam_list
+
+def get_backgrounds(loader, num_batches=6):
+    """
+    Fetches `num_batches` of images from the DataLoader to create a diverse backgrounds batch.
+    Args:
+        loader (DataLoader): PyTorch DataLoader object.
+        num_batches (int): Number of batches to fetch.
+    Returns:
+        torch.Tensor: Combined tensor of images from all fetched batches.
+    """
+    backgrounds = []
+    batch_count = 0
+    for batch in loader:
+        if batch_count == num_batches:
+            break
+        images = batch['img']
+        backgrounds.append(images)
+        batch_count += 1
+
+    # Concatenate all batches along the batch dimension
+    #backgrounds = [torch.tensor(bg).cuda() if not isinstance(bg, torch.Tensor) else bg for bg in backgrounds]
+    return torch.cat(backgrounds, dim=0).cuda()
 
 # Example usage:
 def main():
@@ -549,43 +536,20 @@ def main():
     model = models.resnet50(pretrained=True).cuda().eval()
     grad_cam = GradCAM(model, 'layer4')
     
-    """
-    # Process sample images
-    path = os.getcwd()
-    path = path + "/CMO/testing_images/"
-    print(path)
-
-    image_paths = [
-        path + '1.jpg',
-        path + '2.jpg',
-        path + '3.jpg'
-    ]
-
-    images = create_test_batch(image_paths, is_cifar=False)
-    
-    backgrounds = images.repeat(6, 1, 1, 1)
-    
-    # Process images (works for both ImageNet and CIFAR)
-    cam_maps, probs = grad_cam(images)
-    masks, actual_lams = generate_mixing_masks(cam_maps, lam=0.7)
-    
-    generate_mixed_images_with_augmentation(images, backgrounds, masks, types=['scale', 'rotate', 'flip'])
-
-    # Also show the GradCAM visualization
-    visualize_cam_with_bbox(images, cam_maps, masks)
-
-    # Visualize results
-    #visualize_cam(images, cam_maps, masks)
-    """
-    
     #test for cifar data.
     train_dataset = load_dataset("tomas-gajarsky/cifar100-lt", 'r-10', split="train")
     
         # Convert the dataset to include tensors
     def transform_batch(examples):
-        # Convert list of images to tensor
-        images = torch.stack([torch.tensor(np.array(img)).permute(2, 0, 1) for img in examples['img']])
-        return {'img': images, 'label': examples['fine_label']}
+        mean = torch.tensor([0.485, 0.456, 0.406])
+        std = torch.tensor([0.229, 0.224, 0.225])
+        images = []
+        for img in examples['img']:
+            img = Image.fromarray(np.array(img)).resize((224, 224))
+            img = torch.tensor(np.array(img)).permute(2, 0, 1).float() / 255.0
+            img = (img - mean[:, None, None]) / std[:, None, None]
+            images.append(img)
+        return {'img': torch.stack(images), 'label': examples['fine_label']}
 
     train_dataset.set_transform(transform_batch)
     
@@ -601,20 +565,11 @@ def main():
         if i == 2:
             break
         images = batch['img'].cuda()
-        
-        print("Shape before normalization:", images.shape)
-        print("Value range before norm:", images.min().item(), images.max().item())
-        
-        
-        #plot image to check how it looks
-        img = images[0].cpu().numpy()
-        plt.imshow(img)
-        
-        
+   
         print(f"Batch {i+1}: {images.size()} images")
         
-        # Create backgrounds by repeating the images
-        backgrounds = images.repeat(6, 1, 1, 1)
+        backgrounds = get_backgrounds(train_loader, num_batches=6)
+        print(f"Backgrounds shape: {backgrounds.shape}")
         
         print("Backgrounds shape:", backgrounds.shape)
         
@@ -630,6 +585,6 @@ def main():
         # Generate mixed images
         generate_mixed_images_with_augmentation(images, backgrounds, masks, types=['scale', 'rotate', 'flip'])
     
-    
+   
 if __name__ == "__main__":
     main()

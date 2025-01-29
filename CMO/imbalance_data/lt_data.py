@@ -43,9 +43,57 @@ class LT_Dataset(Dataset):
             if self.transform is not None:
                 sample = self.transform(sample)
 
-        # return sample, label, path
-        return sample, label
+        return sample, label, path
+        #return sample, label
+
+class LT_Dataset_ROI(Dataset):
+
+    def __init__(self, roi_path, transform_train=None, transform_mask=None, use_randaug=False):
+        self.img_path = []
+        self.labels = []
+        self.transform = transform_train
+        self.mask_transform = transform_mask
+        self.use_randaug = use_randaug
+        
+        #roi_path is the path to the roi images's directory
+        roi_files = os.listdir(roi_path)
+        for file in roi_files:
+            #get file path
+            self.img_path.append(os.path.join(roi_path, file))
+            #get label from file name
+            self.labels.append(int(file.split('_')[2]))
+        self.targets = self.labels
+
+    def __len__(self):
+        return len(self.labels)
     
+
+    def __getitem__(self, index):
+
+        path = self.img_path[index]
+        label = self.labels[index]
+        
+        #get mask path from roi image path
+        mask_path = path.replace('region_images', 'masks').replace('roi.JPEG', 'mask.png')
+        
+        with open(mask_path, 'rb') as f:
+            mask = Image.open(f).convert('L')
+              
+        with open(path, 'rb') as f:
+            sample = Image.open(f).convert('RGB')
+
+        
+        if self.transform is not None:
+            sample = self.transform(sample)
+            
+        if self.mask_transform is not None:
+            mask = self.mask_transform(mask)
+            
+
+        return sample, label, mask
+        #return sample, label
+
+  
 '''
 # Desired class ratios
 class_ratios = [4000, 2000, 1000, 750, 500, 350, 200, 100, 60, 40]
@@ -201,3 +249,10 @@ transform_val = transforms.Compose([
         ])
 train_dataset, val_dataset = load_imb_imagenet(img_dir, transform_train, transform_val)
 '''
+
+
+def foreground_augmentation(image, mask, transform):
+    # Apply the same transformation to both the image and the mask
+    image = transform(image)
+    mask = transform(mask)
+    return image, mask
