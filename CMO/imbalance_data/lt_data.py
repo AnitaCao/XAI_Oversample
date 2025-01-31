@@ -43,7 +43,7 @@ class LT_Dataset(Dataset):
             if self.transform is not None:
                 sample = self.transform(sample)
 
-        return sample, label, path
+        return sample, label
         #return sample, label
 
 class LT_Dataset_ROI(Dataset):
