@@ -28,6 +28,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 import region_select_copy as region_select
 from opts import parser
 from PIL import Image
+import torch.nn.functional as F
+from torch import vmap
 
 
 import torchvision.transforms.functional as TF
@@ -49,7 +51,7 @@ def main():
     args = parser.parse_args()
     
     args.store_name = '_'.join(
-        [args.dataset, args.arch, args.loss_type, args.train_rule, args.cut_mix, str(args.imb_factor),
+        [args.dataset, args.arch, args.loss_type, args.train_rule, args.cut_mix, str(args.data_aug), 
         str(args.rand_number),
         str(args.mixup_prob), args.exp_str])
     prepare_folders(args)
@@ -78,6 +80,8 @@ def main_worker(gpu, ngpus_per_node, args):
     global train_cls_num_list
     global cls_num_list_cuda
     args.gpu = gpu
+    
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
    
     # create model
     print("=> creating model '{}'".format(args.arch))
@@ -94,6 +98,13 @@ def main_worker(gpu, ngpus_per_node, args):
         XAI_model = XAI_model.cuda(args.gpu)
         XAI_model.eval()
         gc = region_select.GradCAM(XAI_model, target_layer='layer4')
+        
+    dino_model = None
+    if args.cut_mix == 'CMO_OBJ':
+        dino_model = models.resnet50(pretrained=True)
+        dino_model = dino_model.cuda(args.gpu)
+        dino_model.eval()
+        gc = region_select.GradCAM(dino_model, target_layer='layer4')
     
     if args.loss_type == 'LDAM':
         num_ftrs = model.fc.in_features
@@ -102,7 +113,8 @@ def main_worker(gpu, ngpus_per_node, args):
     if args.gpu is not None:
         print("Use GPU: {} for training".format(args.gpu))
         torch.cuda.set_device(args.gpu)
-        model = model.cuda(args.gpu)
+        device = torch.device(f'cuda:{args.gpu}' if torch.cuda.is_available() else 'cpu')
+        model = model.to(device)
     else:
         # DataParallel will divide and allocate batch_size to all available GPUs
         model = torch.nn.DataParallel(model).cuda()
@@ -254,19 +266,7 @@ def main_worker(gpu, ngpus_per_node, args):
         weighted_sampler_roi = torch.utils.data.WeightedRandomSampler(samples_weight_roi, len(samples_weight_roi),
                                                                   replacement=True)
         roi_loader = torch.utils.data.DataLoader(roi_dataset, batch_size=args.batch_size, num_workers=args.workers, sampler=weighted_sampler_roi, drop_last=True)
-        
-        '''
-        #testing the weighted sampler
-        for i, batch in enumerate(weighted_train_loader):
-            input, target = batch['img'], batch['label']
-            #print("target: ", target)
-            for t in target:
-                weighted_cls_num_list[t] += 1
-        print("weighted cls num list:")
-        print(weighted_cls_num_list)
-        print("total number of samples: ", sum(weighted_cls_num_list))
-        print("weighted sampler testing finished")
-        '''    
+         
 
     cls_num_list_cuda = torch.from_numpy(np.array(cls_num_list)).float().cuda(args.gpu)
 
@@ -287,44 +287,24 @@ def main_worker(gpu, ngpus_per_node, args):
             paco_adjust_learning_rate(optimizer, epoch, args)
         else:
             adjust_learning_rate(optimizer, epoch, args)
-
-        if args.train_rule == 'None':
-            train_sampler = None
-            per_cls_weights = None
-        elif args.train_rule == 'CBReweight':
-            train_sampler = None
-            beta = 0.9999
-            effective_num = 1.0 - np.power(beta, cls_num_list)
-            per_cls_weights = (1.0 - beta) / np.array(effective_num)
-            per_cls_weights = per_cls_weights / np.sum(per_cls_weights) * len(cls_num_list)
-            per_cls_weights = torch.FloatTensor(per_cls_weights).cuda(args.gpu)
-        elif args.train_rule == 'DRW':
-            train_sampler = None
-            idx = epoch // 160
-            betas = [0, 0.9999]
-            effective_num = 1.0 - np.power(betas[idx], cls_num_list)
-            per_cls_weights = (1.0 - betas[idx]) / np.array(effective_num)
-            per_cls_weights = per_cls_weights / np.sum(per_cls_weights) * len(cls_num_list)
-            per_cls_weights = torch.FloatTensor(per_cls_weights).cuda(args.gpu)
-        else:
-            warnings.warn('Sample rule is not listed')
-
+            
+        train_sampler, per_cls_weights = set_trainrule(args, cls_num_list, epoch)
 
         if args.loss_type == 'CE':
-            criterion = nn.CrossEntropyLoss(weight=per_cls_weights).cuda(args.gpu)
+            criterion = nn.CrossEntropyLoss(weight=per_cls_weights).to(device)
         elif args.loss_type == 'BS':
-            criterion = BalancedSoftmaxLoss(cls_num_list=cls_num_list_cuda).cuda(args.gpu)
+            criterion = BalancedSoftmaxLoss(cls_num_list=cls_num_list_cuda).to(device)
         elif args.loss_type == 'LDAM':
-            criterion = LDAMLoss(cls_num_list=cls_num_list, max_m=0.5, s=30, weight=per_cls_weights).cuda(args.gpu)
+            criterion = LDAMLoss(cls_num_list=cls_num_list, max_m=0.5, s=30, weight=per_cls_weights).to(device)
         else:
             warnings.warn('Loss type is not listed')
             return
 
         # train for one epoch
-        train(train_loader, model, gc, criterion, optimizer, epoch, args, log_training, weighted_train_loader, roi_loader)
+        train(train_loader, model, gc, criterion, optimizer, epoch, args, log_training, weighted_train_loader, roi_loader, device)
 
         # evaluate on validation set
-        accs = validate(val_loader, model, criterion, epoch, args, log_testing)
+        accs = validate(val_loader, model, criterion, epoch, args, log_testing, device)
         acc1 = accs["top1_acc"]
 
         # remember best acc@1 and save checkpoint
@@ -356,8 +336,30 @@ def hms_string(sec_elapsed):
     s = sec_elapsed % 60.
     return "{}:{:>02}:{:>05.2f}".format(h, m, s)
 
+def set_trainrule(args, cls_num_list, epoch):
+    if args.train_rule == 'None':
+        train_sampler = None
+        per_cls_weights = None
+    elif args.train_rule == 'CBReweight':
+        train_sampler = None
+        beta = 0.9999
+        effective_num = 1.0 - np.power(beta, cls_num_list)
+        per_cls_weights = (1.0 - beta) / np.array(effective_num)
+        per_cls_weights = per_cls_weights / np.sum(per_cls_weights) * len(cls_num_list)
+        per_cls_weights = torch.FloatTensor(per_cls_weights).cuda(args.gpu)
+    elif args.train_rule == 'DRW':
+        train_sampler = None
+        idx = epoch // 160
+        betas = [0, 0.9999]
+        effective_num = 1.0 - np.power(betas[idx], cls_num_list)
+        per_cls_weights = (1.0 - betas[idx]) / np.array(effective_num)
+        per_cls_weights = per_cls_weights / np.sum(per_cls_weights) * len(cls_num_list)
+        per_cls_weights = torch.FloatTensor(per_cls_weights).cuda(args.gpu)
+    else:
+        warnings.warn('Sample rule is not listed')
+    return train_sampler, per_cls_weights
 
-def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, weighted_train_loader=None, roi_loader=None):
+def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, weighted_train_loader=None, roi_loader=None, device='cpu'):
     batch_time = AverageMeter('Time', ':6.3f')
     data_time = AverageMeter('Data', ':6.3f')
     losses = AverageMeter('Loss', ':.4e')
@@ -368,24 +370,25 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, 
     model.train()
 
     end = time.time()
-    if args.cut_mix.startswith('CMO') and args.start_cut_mix < epoch < (args.epochs - args.end_cut_mix):
+    if args.cut_mix in ['CMO', 'CMO_XAI'] and args.start_cut_mix < epoch < (args.epochs - args.end_cut_mix):
         inverse_iter = iter(weighted_train_loader)
+    elif args.cut_mix == 'CMO_OBJ' and args.start_cut_mix < epoch < (args.epochs - args.end_cut_mix):
+        roi_iter = iter(roi_loader)
+        train_iter = iter(train_loader)    
 
-    for i, (input, target) in enumerate(train_loader):
+    for i, (input, target) in enumerate(train_loader):       
+        input = input.to(device, non_blocking=True)
+        target = target.to(device, non_blocking=True)
         
-        input = input.cuda(args.gpu, non_blocking=True)
-        target = target.cuda(args.gpu, non_blocking=True) 
-        
-        if args.cut_mix.startswith('CMO') and args.start_cut_mix < epoch < (
-                args.epochs - args.end_cut_mix):
+        if args.cut_mix in ['CMO', 'CMO_XAI'] and args.start_cut_mix < epoch < (args.epochs - args.end_cut_mix):
             try:
                 input2, target2 = next(inverse_iter) 
             except:
                 inverse_iter = iter(weighted_train_loader)
                 input2, target2 = next(inverse_iter)
                 
-            input2 = input2[:input.size()[0]].cuda(args.gpu, non_blocking=True) # make sure the batch size is the same
-            target2 = target2[:target.size()[0]].cuda(args.gpu, non_blocking=True) # make sure the batch size is the same
+            input2 = input2[:input.size()[0]].to(device, non_blocking=True)
+            target2 = target2[:target.size()[0]].to(device, non_blocking=True)
             
         # measure data loading time
         data_time.update(time.time() - end)
@@ -438,17 +441,17 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, 
                 
                 mixed_imgs_list, lam_list = region_select.generate_mixed_images_with_augmentation(input2, backgrounds, masks, types=['scale', 'rotate', 'flip'])  
                 
-                input = torch.stack(mixed_imgs_list, dim=0).cuda(args.gpu, non_blocking=True)
+                input = torch.stack(mixed_imgs_list, dim=0).to(device, non_blocking=True)
                 
-                target = backgrounds_labels.cuda(args.gpu, non_blocking=True)  #background labels
-                target2 = target2.repeat_interleave(6, dim=0).cuda(args.gpu, non_blocking=True)  #foreground labels
+                target = backgrounds_labels.to(device, non_blocking=True)
+                target2 = target2.repeat_interleave(6, dim=0).to(device, non_blocking=True)
                 
             else:
                 backgrounds = input
                 input, lam_list = region_select.generate_mixed_images_without_augmentation(input2, backgrounds, masks)
         
             output = model(input)
-            lam_tensor = torch.tensor(lam_list).cuda(args.gpu)
+            lam_tensor = torch.tensor(lam_list).to(device, non_blocking=True)
             loss = criterion(output, target) * (1. - lam_tensor) + criterion(output, target2) *  lam_tensor
             loss = loss.mean()   
                  
@@ -458,103 +461,79 @@ def train(train_loader, model, gradcam, criterion, optimizer, epoch, args, log, 
             print("---Calling Object Detection. Batch number: ", i)
             start = time.time()
             
-            input2= next(iter(roi_loader))  #get a batch from roi_loader as foreground  
+            try:
+                input2 = next(roi_iter) #get a batch from roi_loader as foreground 
+            except StopIteration:
+                roi_iter = iter(roi_loader)  # Restart iterator if exhausted
+                input2 = next(roi_iter)
+
             foreground = input2[:input.size()[0]]
             
-            input2_imgs = foreground[0].cuda(args.gpu, non_blocking=True)
-            target2 = foreground[1].cuda(args.gpu, non_blocking=True)
-            input2_masks = foreground[2].cuda(args.gpu, non_blocking=True)
+            input2_rois = foreground[0].to(device, non_blocking=True)
+            target2 = foreground[1].to(device, non_blocking=True)
+            input2_masks = foreground[2].to(device, non_blocking=True)
             
-            #time5 = time.time() 
-            #print("Time for getting input2: ", time5  - start)
+            time5 = time.time() 
+            print("Time for getting input2: ", time5  - start)
             
             if args.data_aug:
+                expand = False
                 print("Data Augmentation")  
                 #time1 = time.time()
+                if expand:
+                    augmented_rois, augmented_masks = augment_rois_and_masks_expand(
+                    input2_rois, input2_masks, augmentation_types=['scale', 'rotate', 'flip'])
                 
-                augmented_rois, augmented_masks = augment_rois_and_masks(
-                input2_imgs, input2_masks, augmentation_types=['scale', 'rotate', 'flip'])
-                
-                #print time
-                #time2 = time.time()
-                #print("Time for getting augmented masks: ", time2 - time1)
+                    #time2 = time.time()
+                    #print("Time for getting augmented masks: ", time2 - time1)
         
                 
-                lams = 1 - augmented_masks.sum(dim=(1,2,3)) / (224*224)
+                    lams = 1 - augmented_masks.sum(dim=(1,2,3)) / (224*224)
                 
-                backgrounds = []
-                backgrounds_labels = []
-                for j in range(6):
-                    batch = next(iter(train_loader))
-                    b_imgs = batch[0][:input.size()[0]]
-                    b_labels = batch[1][:input.size()[0]]
-                    if isinstance(b_imgs, list):
-                        # Convert nested list to tensor
-                        b_imgs = torch.stack([torch.stack([torch.stack(channel) for channel in img], dim=0) for img in b_imgs], dim=0).permute(3,0,1,2)
-                        b_imgs = b_imgs.float()
-                    backgrounds.append(b_imgs)
-                    backgrounds_labels.append(b_labels)
+                    backgrounds = []
+                    backgrounds_labels = []
+                    for j in range(6):
+                        batch = next(train_iter)
+                        b_imgs = batch[0][:input.size()[0]]
+                        b_labels = batch[1][:input.size()[0]]
+                        if isinstance(b_imgs, list):
+                            # Convert nested list to tensor
+                            b_imgs = torch.stack([torch.stack([torch.stack(channel) for channel in img], dim=0) for img in b_imgs], dim=0).permute(3,0,1,2)
+                            b_imgs = b_imgs.float()
+                        backgrounds.append(b_imgs)
+                        backgrounds_labels.append(b_labels)
                     
-                backgrounds = torch.cat(backgrounds, dim=0).cuda(args.gpu, non_blocking=True)
+                    backgrounds = torch.cat(backgrounds, dim=0).to(device, non_blocking=True)
                 
-                #print("Time for getting backgrounds: ", time.time() - time2)
+                    #print("Time for getting backgrounds: ", time.time() - time2)
                 
-                #time3 = time.time()
+                    #time3 = time.time()
              
-                mixed_input = backgrounds * (1. - augmented_masks.cuda(args.gpu, non_blocking=True)) + augmented_rois.cuda(args.gpu, non_blocking=True) * augmented_masks.cuda(args.gpu, non_blocking=True)
+                    mixed_input = backgrounds * (1. - augmented_masks.to(device, non_blocking=True)) + augmented_rois.to(device, non_blocking=True) * augmented_masks.cuda(args.gpu, non_blocking=True)
                 
-                #time4 = time.time()
-                #print("Time for mixing images: ", time4 - time3)
+                    #time4 = time.time()
+                    #print("Time for mixing images: ", time4 - time3)
                 
-                #get foreground labels
-                target = torch.cat(backgrounds_labels, dim=0).cuda(args.gpu, non_blocking=True)
-                target2 = target2.repeat_interleave(6, dim=0)                      
+                    #get foreground labels
+                    target = torch.cat(backgrounds_labels, dim=0).to(device, non_blocking=True)
+                    target2 = target2.repeat_interleave(6, dim=0).to(device, non_blocking=True)  
+                else:
+                    #time1 = time.time()
+                    augmented_rois, augmented_masks = augment_rois_and_masks_random(
+                    input2_rois, input2_masks, augmentation_types=['scale', 'rotate', 'flip'])  
+                    #time2 = time.time()
+                    #print("Time for getting augmented masks: ", time2 - time1)
+                    lams = 1 - augmented_masks.sum(dim=(1,2,3)) / (224*224)
+                    mixed_input = input * (1 - augmented_masks) + augmented_rois * augmented_masks 
+                    #save_augmentation_samples(input2_rois, input2_masks, augmented_rois, augmented_masks, mixed_input, save_dir='aug_samples')                                           
             else:
                 #get the mask roi ratio, lam should a list of lam values for each mask in the batch
-                lams = 1 - input2_masks.sum(dim=(1,2,3)) / (224*224)
-                #time6 = time.time()
-                #print("Time for getting lams: ", time6 - time5)
-
-                # Patch ROIs into the background batch
-                mixed_input = input * (1 - input2_masks) + input2_imgs * input2_masks
-                
-                #time7 = time.time()
-                #print("Time for mixing images: ", time7 - time6)
-                
-            
+                lams = 1 - input2_masks.sum(dim=(1,2,3)) / (224*224)  
+                mixed_input = input * (1 - input2_masks) + input2_rois * input2_masks
+ 
             output = model(mixed_input)
-            loss = criterion(output, target) * lams.cuda(args.gpu) + criterion(output, target2) * (1. - lams.cuda(args.gpu))
+            loss = criterion(output, target) * lams.to(device, non_blocking=True) + criterion(output, target2) * (1. - lams.to(device, non_blocking=True))
             loss = loss.mean()
-
-            '''
-            # Unnormalize input2_imgs for visualization
-            mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).cuda(args.gpu)
-            std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).cuda(args.gpu)
-            # visualize one input and one mask and the mixed_input
-            input_img = input[0].cpu()
-            input_img = input_img * std[0].cpu() + mean[0].cpu()  # Reverse normalization
-            input_img_np = input_img.permute(1, 2, 0).numpy()
-            input_img_np = np.clip(input_img_np, 0, 1)
-            plt.imshow(input_img_np)
-            plt.axis('off')
-            plt.savefig('input_image__.png')
-            
-            input2_img = input2_imgs[0].cpu()
-            input2_img = input2_img * std[0].cpu() + mean[0].cpu()  # Reverse normalization
-            input2_img_np = input2_img.permute(1, 2, 0).numpy()
-            input2_img_np = np.clip(input2_img_np, 0, 1)
-            plt.imshow(input2_img_np)
-            plt.axis('off')
-            plt.savefig('input2_image__.png')
-            
-            mixed_image = mixed_input[0].cpu()
-            mixed_image = mixed_image * std[0].cpu() + mean[0].cpu()  # Reverse normalization
-            mixed_image_np = mixed_image.permute(1, 2, 0).numpy()
-            mixed_image_np = np.clip(mixed_image_np, 0, 1)
-            plt.imshow(mixed_image_np)
-            plt.axis('off')
-            plt.savefig('mixed_input_image__.png')
-            '''           
                      
         else: 
             output = model(input) #output.size() = [128, 10], 128 is batch size, 10 is number of classes
@@ -613,7 +592,31 @@ def rand_bbox(size, lam):
 
     return bbx1, bby1, bbx2, bby2
 
-
+def save_augmentation_samples(original_rois, original_masks, augmented_rois, augmented_masks, mixed_images, save_dir='aug_samples'):
+   os.makedirs(save_dir, exist_ok=True)
+   device = original_rois.device
+   
+   mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(3,1,1)
+   std = torch.tensor([0.229, 0.224, 0.225], device=device).view(3,1,1)
+   
+   def denormalize(x):
+       return (x * std + mean).clamp(0, 1)
+   
+   N = 10
+   for i in range(min(N, len(original_rois))):
+       orig_roi = denormalize(original_rois[i]).cpu().permute(1,2,0).numpy()
+       aug_roi = denormalize(augmented_rois[i]).cpu().permute(1,2,0).numpy()
+       mixed = denormalize(mixed_images[i]).cpu().permute(1,2,0).numpy()
+       
+       orig_mask = original_masks[i][0].cpu().numpy()
+       aug_mask = augmented_masks[i][0].cpu().numpy()
+       
+       plt.imsave(f'{save_dir}/orig_roi_{i}.png', orig_roi)
+       plt.imsave(f'{save_dir}/orig_mask_{i}.png', orig_mask, cmap='gray')
+       plt.imsave(f'{save_dir}/aug_roi_{i}.png', aug_roi)
+       plt.imsave(f'{save_dir}/aug_mask_{i}.png', aug_mask, cmap='gray')
+       plt.imsave(f'{save_dir}/mixed_{i}.png', mixed)
+       
 def rand_bbox_withcenter(size, lam, cx, cy):
     W = size[2]
     H = size[3]
@@ -628,8 +631,7 @@ def rand_bbox_withcenter(size, lam, cx, cy):
 
     return bbx1, bby1, bbx2, bby2
 
-
-def validate(val_loader, model, criterion, epoch, args, log=None, flag='val'):
+def validate(val_loader, model, criterion, epoch, args, log=None, flag='val', device='cpu'):
     def compute_classwise_accuracy(conf_matrix):
         cls_cnt = conf_matrix.sum(axis=1)
         cls_hit = np.diag(conf_matrix)
@@ -671,8 +673,8 @@ def validate(val_loader, model, criterion, epoch, args, log=None, flag='val'):
                 input = torch.stack([torch.stack([torch.stack(channel) for channel in img], dim=0) for img in input], dim=0).permute(3,0,1,2)
                 input = input.float()
             
-            input = input.cuda(args.gpu, non_blocking=True)
-            target = target.cuda(args.gpu, non_blocking=True)
+            input = input.to(device, non_blocking=True)
+            target = target.to(device, non_blocking=True)
 
             # compute output
             output = model(input)
@@ -775,7 +777,7 @@ def paco_adjust_learning_rate(optimizer, epoch, args):
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
-def augment_rois_and_masks(rois, masks, augmentation_types=None):
+def augment_rois_and_masks_expand_old(rois, masks, augmentation_types=None):
     """
     Augment a batch of foreground ROIs and their corresponding masks with consistent transformations.
 
@@ -840,7 +842,115 @@ def augment_rois_and_masks(rois, masks, augmentation_types=None):
     
     return augmented_rois, augmented_masks  
    
-    
+import torch
+import torch.nn.functional as F
+
+def augment_rois_and_masks_expand(rois, masks, augmentation_types=None):
+    device = rois.device
+    batch_size, _, H, W = rois.shape
+    augmented_rois = [rois]
+    augmented_masks = [masks]
+
+    if augmentation_types is None or 'scale' in augmentation_types:
+        for scale in [0.8, 1.2]:
+            new_H, new_W = int(H * scale), int(W * scale)
+            rois_scaled = F.interpolate(rois, size=(new_H, new_W), mode='bilinear', align_corners=False)
+            masks_scaled = F.interpolate(masks.float(), size=(new_H, new_W), mode='nearest').long()
+            
+            pad_H, pad_W = max(0, H - new_H), max(0, W - new_W)
+            rois_scaled = F.pad(rois_scaled, (0, pad_W, 0, pad_H))[:, :, :H, :W]
+            masks_scaled = F.pad(masks_scaled, (0, pad_W, 0, pad_H))[:, :, :H, :W]
+            
+            augmented_rois.append(rois_scaled)
+            augmented_masks.append(masks_scaled)
+
+    if augmentation_types is None or 'rotate' in augmentation_types:
+        for angle in [-30, 30]:
+            cos_val = torch.cos(torch.deg2rad(torch.tensor(angle, device=device)))
+            sin_val = torch.sin(torch.deg2rad(torch.tensor(angle, device=device)))
+            theta = torch.tensor([[cos_val, -sin_val, 0],
+                                [sin_val, cos_val, 0]], device=device).repeat(batch_size, 1, 1)
+            
+            grid = F.affine_grid(theta, rois.size(), align_corners=False)
+            rois_rotated = F.grid_sample(rois, grid, mode='bilinear', align_corners=False)
+            masks_rotated = F.grid_sample(masks.float(), grid, mode='nearest', align_corners=False).long()
+            
+            augmented_rois.append(rois_rotated)
+            augmented_masks.append(masks_rotated)
+
+    if augmentation_types is None or 'flip' in augmentation_types:
+        augmented_rois.append(torch.flip(rois, dims=[-1]))
+        augmented_masks.append(torch.flip(masks, dims=[-1]))
+
+    return torch.cat(augmented_rois), torch.cat(augmented_masks)
+
+def augment_rois_and_masks_random(rois, masks, augmentation_types=None, p=0.5):
+   """Random batch augmentation keeping ROI-mask sync"""
+   device = rois.device
+   B, _, H, W = rois.shape
+   
+   # Random flags and parameters per batch
+   do_scale = torch.rand(B, device=device) < p if augmentation_types is None or 'scale' in augmentation_types else False
+   do_rotate = torch.rand(B, device=device) < p if augmentation_types is None or 'rotate' in augmentation_types else False
+   do_flip = torch.rand(B, device=device) < p if augmentation_types is None or 'flip' in augmentation_types else False
+   
+   scales = torch.where(do_scale, 
+                       torch.rand(B, device=device) * 0.4 + 0.8,  # 0.8-1.2
+                       torch.ones(B, device=device))
+   angles = torch.where(do_rotate,
+                       (torch.rand(B, device=device) * 60 - 30),  # -30 to 30
+                       torch.zeros(B, device=device))
+   
+   rois_aug, masks_aug = rois, masks
+   
+   # Scale transform
+   if do_scale.any():
+       batch_sizes = [(int(H * s), int(W * s)) for s in scales]
+       max_H = max(h for h, _ in batch_sizes)
+       max_W = max(w for _, w in batch_sizes)
+       
+       scaled_rois = []
+       scaled_masks = []
+       
+       for i, (h, w) in enumerate(batch_sizes):
+           if scales[i] != 1.0:
+               roi_scaled = F.interpolate(rois[i:i+1], size=(h, w), mode='bilinear', align_corners=False)
+               mask_scaled = F.interpolate(masks[i:i+1].float(), size=(h, w), mode='nearest')
+               
+               pad_h, pad_w = max_H - h, max_W - w
+               if pad_h > 0 or pad_w > 0:
+                   roi_scaled = F.pad(roi_scaled, (0, pad_w, 0, pad_h))
+                   mask_scaled = F.pad(mask_scaled, (0, pad_w, 0, pad_h))
+               
+               scaled_rois.append(roi_scaled[:, :, :H, :W])
+               scaled_masks.append(mask_scaled[:, :, :H, :W])
+           else:
+               scaled_rois.append(rois[i:i+1])
+               scaled_masks.append(masks[i:i+1])
+               
+       rois_aug = torch.cat(scaled_rois)
+       masks_aug = torch.cat(scaled_masks)
+   
+   # Rotate transform
+   if do_rotate.any():
+       for i in range(B):
+           if angles[i] != 0:
+               cos_val = torch.cos(torch.deg2rad(angles[i]))
+               sin_val = torch.sin(torch.deg2rad(angles[i]))
+               theta = torch.tensor([[cos_val, -sin_val, 0],
+                                   [sin_val, cos_val, 0]], device=device).unsqueeze(0)
+               
+               grid = F.affine_grid(theta, rois_aug[i:i+1].shape, align_corners=False)
+               rois_aug[i:i+1] = F.grid_sample(rois_aug[i:i+1], grid, mode='bilinear', align_corners=False)
+               masks_aug[i:i+1] = F.grid_sample(masks_aug[i:i+1].float(), grid, mode='nearest', align_corners=False)
+   
+   # Flip transform
+   if do_flip.any():
+       rois_aug = torch.where(do_flip.view(B, 1, 1, 1), torch.flip(rois_aug, [-1]), rois_aug)
+       masks_aug = torch.where(do_flip.view(B, 1, 1, 1), torch.flip(masks_aug, [-1]), masks_aug)
+   
+   masks_aug = masks_aug.long()
+   return rois_aug, masks_aug     
 
 if __name__ == '__main__':
     main()
