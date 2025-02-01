@@ -99,12 +99,6 @@ def main_worker(gpu, ngpus_per_node, args):
         XAI_model.eval()
         gc = region_select.GradCAM(XAI_model, target_layer='layer4')
         
-    dino_model = None
-    if args.cut_mix == 'CMO_OBJ':
-        dino_model = models.resnet50(pretrained=True)
-        dino_model = dino_model.cuda(args.gpu)
-        dino_model.eval()
-        gc = region_select.GradCAM(dino_model, target_layer='layer4')
     
     if args.loss_type == 'LDAM':
         num_ftrs = model.fc.in_features
@@ -304,7 +298,7 @@ def main_worker(gpu, ngpus_per_node, args):
         train(train_loader, model, gc, criterion, optimizer, epoch, args, log_training, weighted_train_loader, roi_loader, device)
 
         # evaluate on validation set
-        accs = validate(val_loader, model, criterion, epoch, args, log_testing, device)
+        accs = validate(val_loader, model, criterion, args, device, log_testing)
         acc1 = accs["top1_acc"]
 
         # remember best acc@1 and save checkpoint
@@ -631,7 +625,7 @@ def rand_bbox_withcenter(size, lam, cx, cy):
 
     return bbx1, bby1, bbx2, bby2
 
-def validate(val_loader, model, criterion, epoch, args, log=None, flag='val', device='cpu'):
+def validate(val_loader, model, criterion,  args, device, log=None, flag='val'):
     def compute_classwise_accuracy(conf_matrix):
         cls_cnt = conf_matrix.sum(axis=1)
         cls_hit = np.diag(conf_matrix)
