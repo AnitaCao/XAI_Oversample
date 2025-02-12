@@ -2,6 +2,7 @@
 import os
 import sys
 import random
+import math
 import time
 import numpy as np
 import torch
@@ -22,14 +23,13 @@ from util.util import *
 from util.randaugment import rand_augment_transform
 import util.moco_loader as moco_loader
 import matplotlib
-matplotlib.use('Agg')
+#matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import region_select_copy as region_select
 from opts import parser
 from PIL import Image
 import torch.nn.functional as F
-from torch import vmap
 
 
 import torchvision.transforms.functional as TF
@@ -51,7 +51,7 @@ def main():
     args = parser.parse_args()
     
     args.store_name = '_'.join(
-        [args.dataset, args.arch, args.loss_type, args.train_rule, args.cut_mix, str(args.data_aug), 
+        [args.dataset, args.arch, args.loss_type, args.train_rule, args.cut_mix, str(args.data_aug), str(args.epochs), 
         str(args.rand_number),
         str(args.mixup_prob), args.exp_str])
     prepare_folders(args)
@@ -343,7 +343,7 @@ def set_trainrule(args, cls_num_list, epoch):
         per_cls_weights = torch.FloatTensor(per_cls_weights).cuda(args.gpu)
     elif args.train_rule == 'DRW':
         train_sampler = None
-        idx = epoch // 160
+        idx = epoch // 80
         betas = [0, 0.9999]
         effective_num = 1.0 - np.power(betas[idx], cls_num_list)
         per_cls_weights = (1.0 - betas[idx]) / np.array(effective_num)
@@ -707,25 +707,25 @@ def validate(val_loader, model, criterion,  args, device, log=None, flag='val'):
         
         log_results() 
 
-        if args.imb_factor == 0.01:
-            many_shot_mask = train_cls_num_list > 125
-            medium_shot_mask = (train_cls_num_list <= 125) & (train_cls_num_list >= 40)
-            few_shot_mask = train_cls_num_list < 40
+        
+        many_shot_mask = train_cls_num_list > 100
+        medium_shot_mask = (train_cls_num_list <= 100) & (train_cls_num_list > 20)
+        few_shot_mask = train_cls_num_list <= 20
 
             # Compute accuracy for each category, handling zero-division errors
-            many_shot_acc = np.mean(cls_acc[many_shot_mask]) * 100 if np.any(many_shot_mask) else 0
-            medium_shot_acc = np.mean(cls_acc[medium_shot_mask]) * 100 if np.any(medium_shot_mask) else 0
-            few_shot_acc = np.mean(cls_acc[few_shot_mask]) * 100 if np.any(few_shot_mask) else 0
+        many_shot_acc = np.mean(cls_acc[many_shot_mask]) * 100 if np.any(many_shot_mask) else 0
+        medium_shot_acc = np.mean(cls_acc[medium_shot_mask]) * 100 if np.any(medium_shot_mask) else 0
+        few_shot_acc = np.mean(cls_acc[few_shot_mask]) * 100 if np.any(few_shot_mask) else 0
 
             # Log the shot accuracy results
-            shot_accuracy_log = (
-                f"{flag} Many-shot Acc: {many_shot_acc:.2f}%, "
-                f"Medium-shot Acc: {medium_shot_acc:.2f}%, "
-                f"Few-shot Acc: {few_shot_acc:.2f}%"
-            )
-            if log is not None:
-                log.write(shot_accuracy_log + '\n')
-                log.flush()
+        shot_accuracy_log = (
+            f"{flag} Many-shot Acc: {many_shot_acc:.2f}%, "
+            f"Medium-shot Acc: {medium_shot_acc:.2f}%, "
+            f"Few-shot Acc: {few_shot_acc:.2f}%"
+        )
+        if log is not None:
+            log.write(shot_accuracy_log + '\n')
+            log.flush()
 
         #tf_writer.add_scalar('loss/test_' + flag, losses.avg, epoch)
         #tf_writer.add_scalar('acc/test_' + flag + '_top1', top1.avg, epoch)
@@ -747,29 +747,30 @@ def adjust_learning_rate(optimizer, epoch, args):
     epoch = epoch + 1
     if epoch <= 5:
         lr = args.lr * epoch / 5
-    elif epoch > 180:
-        lr = args.lr * 0.0001
-    elif epoch > 160:
+    elif epoch > 80:
         lr = args.lr * 0.01
+    elif epoch > 60:
+        lr = args.lr * 0.1
     else:
         lr = args.lr
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
 def paco_adjust_learning_rate(optimizer, epoch, args):
-    # experiments as PaCo (ICCV'21) setting.
+    """Decay the learning rate based on schedule"""
     warmup_epochs = 10
-    """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
-    if epoch <= warmup_epochs:
-        lr = args.lr / warmup_epochs * (epoch + 1)
-    elif epoch > 360:
-        lr = args.lr * 0.01
-    elif epoch > 320:
-        lr = args.lr * 0.1
-    else:
-        lr = args.lr
+
+    lr = args.lr
+    if epoch < warmup_epochs:
+        lr = lr / warmup_epochs * (epoch + 1)
+    elif args.cos:  # cosine lr schedule
+        lr *= 0.5 * (1. + math.cos(math.pi * (epoch - warmup_epochs + 1) / (args.epochs - warmup_epochs + 1)))
+    else:  # stepwise lr schedule
+        for milestone in args.lr_steps:
+            lr *= 0.1 if epoch >= milestone else 1.
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
+
 
 def augment_rois_and_masks_expand_old(rois, masks, augmentation_types=None):
     """
@@ -836,8 +837,6 @@ def augment_rois_and_masks_expand_old(rois, masks, augmentation_types=None):
     
     return augmented_rois, augmented_masks  
    
-import torch
-import torch.nn.functional as F
 
 def augment_rois_and_masks_expand(rois, masks, augmentation_types=None):
     device = rois.device

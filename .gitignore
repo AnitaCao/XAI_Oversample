@@ -22,6 +22,12 @@ CMO/imbalance_data/*.txt
 *.png
 yolov5/
 yolov5s.pt
+*.pth
+*.log
+CMO/imbalance_data/dino_sam_region_images/
+CMO/imbalance_data/masks_metadata.json
+Grounded-Segment-Anything/
+
 
 # files only in RC account for testing purposes. Remove before submit.
 test_files_for_RC/
